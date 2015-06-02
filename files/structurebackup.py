@@ -197,9 +197,22 @@ class GoogleDrive:
 
         self.drive_service = build('drive', 'v2', http=http)
 
+    def progress_bar(self, status, time_started):
+        time_left = ((time.time() - time_started) / status.progress()) - (time.time() - time_started)
+        return "{:.2f}% uploaded [elapsed: {}, left: {}]".format(status.progress() * 100,
+                                                                 get_time_from_secs(time.time() - time_started),
+                                                                 get_time_from_secs(time_left))
+
     def upload_file(self, file_path):
         media_body = MediaFileUpload(file_path, chunksize=4 * 1024 ** 2, resumable=True)
         body = {
             'title': name_from_path(file_path, raw=True)
         }
-        self.drive_service.files().insert(body=body, media_body=media_body).execute()
+        request = self.drive_service.files().insert(body=body, media_body=media_body)
+
+        time_started = time.time()
+        response = None
+        while response is None:
+            status, response = request.next_chunk(num_retries=500)
+            if status:
+                print(self.progress_bar(status, time_started), end="\r")

@@ -23,8 +23,8 @@ dirs_to_archive = [r"c:\users\mare5\projects",
 
 def main():
     my_dropbox = structurebackup.Dropbox(overwrite=True)
-    #my_google = structurebackup.GoogleDrive()
-    with structurebackup.Backup(clean=True, my_dropbox=my_dropbox) as bkup:
+    my_google = structurebackup.GoogleDrive()
+    with structurebackup.Backup(clean=True, my_dropbox=my_dropbox, my_google=my_google) as bkup:
         for path in tqdm.tqdm(paths_to_backup):
             structurebackup.write_backup_file(save_to=bkup.temp_dir_path, path=path)
 
