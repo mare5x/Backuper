@@ -13,7 +13,12 @@ dir_only_paths = [r"d:\downloads",
                   r"c:\program files",
                   r"c:\program files (x86)\osu!"]
 
-dirs_to_archive = [r"c:\users\mare5\projects", r"d:\ebooks\calibre", r"c:\users\mare5\documents\šola", r"d:\guitar\progress"]
+dirs_to_archive = [r"c:\users\mare5\projects",
+                   r"d:\ebooks\calibre",
+                   r"c:\users\mare5\documents\šola",
+                   r"d:\guitar\progress",
+                   r"C:\Program Files (x86)\osu!\Screenshots",
+                   r"C:\Program Files (x86)\osu!\Replays"]
 
 
 def main():

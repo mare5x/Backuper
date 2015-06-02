@@ -1,5 +1,6 @@
 #! python3
 
+import shelve
 import configparser
 import tempfile
 import datetime
@@ -37,6 +38,14 @@ class Config(configparser.ConfigParser):
     def write_to_config(self):
         with open('settings.ini', 'w') as configfile:
             self.write(configfile)
+
+    def get_shelf(self, key):
+        with shelve.open('settings') as db:
+            return db[key]
+
+    def set_shelf(self, key, item):
+        with shelve.open('settings') as db:
+            db[key] = item
 
 
 class Backup():
@@ -160,35 +169,31 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
 
 
 class GoogleDrive:
-    # CLIENT_ID = "964483597009-5mnrqiecrnsa75fjld5prpdklt8m6n4s.apps.googleusercontent.com"
-    # CLIENT_SECRET = "XyWO7sl1zfVXuMk5RWbyV4qt"
-    # OAUTH_SCOPE = 'https://www.googleapis.com/auth/drive'
-    # REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob'
-
     def __init__(self):
         config = Config()
         CLIENT_ID = config['GoogleDrive']['client_id']
         CLIENT_SECRET = config['GoogleDrive']['client_secret']
         OAUTH_SCOPE = config['GoogleDrive']['oauth_scope']
         REDIRECT_URI = config['GoogleDrive']['redirect_uri']
-        credentials = config['GoogleDrive']['credentials']
+        try:
+            credentials = config.get_shelf('credentials')
+        except KeyError:
+            credentials = config.set_shelf('credentials', None)
 
         flow = OAuth2WebServerFlow(CLIENT_ID, CLIENT_SECRET, OAUTH_SCOPE, redirect_uri=REDIRECT_URI)
-
-        # try:
-
-        #     # authorize and read from file
-        # except #authorize error:
-        #     # authorize and save
-        #     config.write_credentials(credentials)
-
-        authorize_url = flow.step1_get_authorize_url()
-        print(authorize_url)
-        code = input("enter: ").strip()
-        credentials = flow.step2_exchange(code)
-
         http = httplib2.Http()
-        http = credentials.authorize(http)
+
+        while True:
+            try:
+                http = credentials.authorize(http)
+            except:
+                authorize_url = flow.step1_get_authorize_url()
+                print(authorize_url)
+                code = input("enter: ").strip()
+                credentials = flow.step2_exchange(code)
+                config.set_shelf('credentials', credentials)
+                continue
+            break
 
         self.drive_service = build('drive', 'v2', http=http)
 
@@ -197,4 +202,4 @@ class GoogleDrive:
         body = {
             'title': name_from_path(file_path, raw=True)
         }
-        self.drive_service.files().insert(media_body=media_body).execute()
+        self.drive_service.files().insert(body=body, media_body=media_body).execute()
