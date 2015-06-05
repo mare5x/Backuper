@@ -21,10 +21,17 @@ dirs_to_archive = [r"c:\users\mare5\projects",
                    r"C:\Program Files (x86)\osu!\Replays"]
 
 
-def main():
-    my_dropbox = structurebackup.Dropbox(overwrite=True)
-    my_google = structurebackup.GoogleDrive()
-    with structurebackup.Backup(clean=True, my_dropbox=my_dropbox, my_google=my_google) as bkup:
+def backup(dropbox=True, google_drive=True):
+    if dropbox:
+        my_dropbox = structurebackup.Dropbox(overwrite=True)
+    else:
+        my_dropbox = None
+    if google_drive:
+        my_google = structurebackup.GoogleDrive()
+    else:
+        my_google = None
+
+    with structurebackup.Backup(clean=True, my_google=my_google, my_dropbox=my_dropbox) as bkup:
         for path in tqdm.tqdm(paths_to_backup):
             structurebackup.write_backup_file(save_to=bkup.temp_dir_path, path=path)
 
@@ -33,6 +40,9 @@ def main():
 
         for path in tqdm.tqdm(dirs_to_archive):
             structurebackup.zip_dir(path, name=structurebackup.name_from_path(path), save_path=bkup.temp_dir_path + "\\")
+
+def main():
+    backup()
 
 
 if __name__ == "__main__":

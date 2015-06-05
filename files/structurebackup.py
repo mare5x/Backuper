@@ -13,6 +13,15 @@ from apiclient.http import MediaFileUpload
 from oauth2client.client import OAuth2WebServerFlow
 
 
+def uploading_to(loc):
+    def wrap(func):
+        def print_info(*args, **kwargs):
+            print("Uploading {2} ({1}) to {0}".format(loc, get_file_size(args[1]), args[1]))
+            func(*args, **kwargs)
+        return print_info
+    return wrap
+
+
 class Config(configparser.ConfigParser):
     def __init__(self):
         super().__init__()
@@ -63,12 +72,19 @@ class Backup():
     def __exit__(self, exc_type, exc_val, exc_tb):
         path_to_zip = zip_dir(self.temp_dir_path)
         if self.my_dropbox:
-            self.my_dropbox.upload_file(path_to_zip)
+            self.to_dropbox(path_to_zip)
         if self.my_google:
-            self.my_google.upload_file(path_to_zip)
+            self.to_google_drive(path_to_zip)
         if self.clean:
             remove_file(path_to_zip)
         print("\nDONE")
+
+    def to_dropbox(self, path):
+        self.my_dropbox.upload_file(path, file_name="{}.zip".format(get_date(for_file=True)))
+
+    def to_google_drive(self, path):
+        folder_id = self.my_google.create_folder("Backuper", store_id=True)
+        self.my_google.upload_file(path, parent_id=folder_id)
 
 
 class Dropbox():
@@ -100,9 +116,9 @@ class Dropbox():
     def get_file_name(self):
         return name_from_path(self.get_latest_file_metadata()['path'], raw=True)
 
-    def upload_file(self, file_path):
+    @uploading_to('Dropbox')
+    def upload_file(self, file_path, file_name=None):
         with open(file_path, "rb") as f:
-            print("uploading {} ({}) to dropbox".format(file_path, get_file_size(file_path)))
             file_size = getsize(file_path)
             uploader = DropboxUploader(self.client, f, file_size)
 
@@ -117,12 +133,20 @@ class Dropbox():
             if self.overwrite:
                 old_file = self.get_file_name()
                 uploader.finish(old_file, parent_rev=self.get_rev())
-                self.client.file_move(old_file, "{}.zip".format(get_date(for_file=True)))
+                if file_name:
+                    self.client.file_move(old_file, "{}".format(file_name))
+                else:
+                    self.client.file_move(old_file, name_from_path(file_path, raw=True))
             else:
-                uploader.finish("{}.zip".format(get_date(for_file=True)))
+                if file_name:
+                    uploader.finish("{}".format(file_name))
+                else:
+                    uploader.finish(name_from_path(file_path, raw=True))
 
 
 class DropboxUploader(dropbox.client.ChunkedUploader):
+    """Python3 compatibility"""
+
     def __init__(self, *args):
         super().__init__(*args)
         self.time_started = time.time()
@@ -170,15 +194,15 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
 
 class GoogleDrive:
     def __init__(self):
-        config = Config()
-        CLIENT_ID = config['GoogleDrive']['client_id']
-        CLIENT_SECRET = config['GoogleDrive']['client_secret']
-        OAUTH_SCOPE = config['GoogleDrive']['oauth_scope']
-        REDIRECT_URI = config['GoogleDrive']['redirect_uri']
+        self.config = Config()
+        CLIENT_ID = self.config['GoogleDrive']['client_id']
+        CLIENT_SECRET = self.config['GoogleDrive']['client_secret']
+        OAUTH_SCOPE = self.config['GoogleDrive']['oauth_scope']
+        REDIRECT_URI = self.config['GoogleDrive']['redirect_uri']
         try:
-            credentials = config.get_shelf('credentials')
+            credentials = self.config.get_shelf('credentials')
         except KeyError:
-            credentials = config.set_shelf('credentials', None)
+            credentials = self.config.set_shelf('credentials', None)
 
         flow = OAuth2WebServerFlow(CLIENT_ID, CLIENT_SECRET, OAUTH_SCOPE, redirect_uri=REDIRECT_URI)
         http = httplib2.Http()
@@ -191,7 +215,7 @@ class GoogleDrive:
                 print(authorize_url)
                 code = input("enter: ").strip()
                 credentials = flow.step2_exchange(code)
-                config.set_shelf('credentials', credentials)
+                self.config.set_shelf('credentials', credentials)
                 continue
             break
 
@@ -203,12 +227,19 @@ class GoogleDrive:
                                                                  get_time_from_secs(time.time() - time_started),
                                                                  get_time_from_secs(time_left))
 
-    def upload_file(self, file_path):
+    @uploading_to('Google Drive')
+    def upload_file(self, file_path, parent_id='root', update_stored=False):
         media_body = MediaFileUpload(file_path, chunksize=4 * 1024 ** 2, resumable=True)
         body = {
-            'title': name_from_path(file_path, raw=True)
+            'title': name_from_path(file_path, raw=True),
+            'parents': [{'id': parent_id}]
         }
-        request = self.drive_service.files().insert(body=body, media_body=media_body)
+
+        file_id = self.get_stored_file_id()
+        if update_stored and file_id:
+            request = self.drive_service.files().update(fileId=file_id, body=body, media_body=media_body)
+        else:
+            request = self.drive_service.files().insert(body=body, media_body=media_body)
 
         time_started = time.time()
         response = None
@@ -216,3 +247,36 @@ class GoogleDrive:
             status, response = request.next_chunk(num_retries=500)
             if status:
                 print(self.progress_bar(status, time_started), end="\r")
+
+        if update_stored:
+            self.config.set_shelf('drive_file_metadata', response)
+
+    def get_stored_metadata(self):
+        try:
+            return self.config.get_shelf('drive_file_metadata')
+        except KeyError:
+            return None
+
+    def get_stored_file_id(self):
+        if self.get_stored_metadata():
+            return self.get_stored_metadata()['id']
+
+    def create_folder(self, name, parent_id='root', store_id=False):
+        body = {
+            'title': name,
+            'parents': [{'id': parent_id}],
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+
+        folder_id = self.drive_service.files().insert(body=body).execute()['id']
+
+        if store_id:
+            self.config.set_shelf(name, folder_id)
+
+        return folder_id
+
+
+# compare old new modified time
+# upload and replace (update) only newer file
+# 1 folder for all (no more DATE.zip)
+#
