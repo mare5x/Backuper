@@ -1,3 +1,4 @@
 structbackup_venv/
 .idea
 settings.*
+test/

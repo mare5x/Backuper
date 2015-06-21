@@ -1,3 +1,4 @@
+from datetime import datetime as dtime
 from time import strftime, gmtime
 import time
 import os
@@ -23,8 +24,17 @@ def get_date(for_file=False):
         return "{}".format(strftime("%Y %b %d, %a %H:%M:%S", gmtime()))
 
 
-def file_last_modified(path):
-    return time.ctime(getmtime(path))
+def date_modified(path, pretty=False, walk=False):
+    if pretty:
+        return time.ctime(getmtime(path))
+    elif walk:
+        date = dtime.min
+        for root, dirs, files in scandir.walk(path):
+            if date_modified(root) > date:
+                date = date_modified(root)
+        return date
+    else:
+        return dtime.fromtimestamp(getmtime(path))
 
 
 def name_from_path(path, end="", raw=False):
@@ -35,7 +45,7 @@ def name_from_path(path, end="", raw=False):
         return r"{}_{}_BACKUP{}".format(get_date(for_file=True), path.rsplit("\\", 1)[-1], end)
 
 
-def get_structure(path=".", dirs_only=False):
+def log_structure(path=".", dirs_only=False):
     print("Logging on {}\n".format(get_date()))
 
     for root, dirs, files in scandir.walk(path):
@@ -45,22 +55,14 @@ def get_structure(path=".", dirs_only=False):
         dirs[:] = [_dir for _dir in dirs if not _dir.startswith(BLACK_LIST_DIRS_PREFIX)
                    and not _dir.endswith(BLACK_LIST_DIRS_SUFFIX)]
         files = [_file for _file in files if _file.endswith(WHITE_LIST_FILES)]
-        indent_level = root.count(os.sep) - path.count(os.sep) - 1
+        indent_depth = root.count(os.sep) - path.count(os.sep) - 1
 
-        print("{}{} last modified: {}".format(' ' * 4 * indent_level, root, file_last_modified(root)), end='')
+        print("{}{} last modified: {}".format(' ' * 4 * indent_depth, root, date_modified(root, pretty=True)), end='')
         print(", {} used".format(convert_file_size(root_size)))
 
         if not dirs_only:
             for _file in files:
-                print("{}{}".format(' ' * 4 * (indent_level + 1), _file))
-
-
-def write_backup_file(save_to=".", path=".", get_dirs_only=False):
-    file_name = r"{}\{}".format(save_to, name_from_path(path, ".txt"))
-    # file_name = r"{}_{}_BACKUP.txt".format(get_date(True), path.rsplit("\\", 1)[-1])
-    with open(file_name, "w", encoding="utf8") as f:
-        with redirect_stdout(f):
-            get_structure(path, dirs_only=get_dirs_only)
+                print("{}{}".format(' ' * 4 * (indent_depth + 1), _file))
 
 
 def create_dir(path="."):
@@ -113,3 +115,8 @@ def convert_file_size(_bytes):
         return "{:.2f} MB".format(kb / 1024)
     else:
         return "{:.2f} KB".format(kb)
+
+def parent_dir(path, rel=False):
+    if rel:
+        return os.path.relpath(os.path.join(path, os.pardir))
+    return os.path.abspath(os.path.join(path, os.pardir))
