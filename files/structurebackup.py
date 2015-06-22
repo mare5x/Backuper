@@ -1,6 +1,7 @@
 #! python3
 
 from collections import namedtuple
+import mimetypes
 import shelve
 import configparser
 import tempfile
@@ -14,6 +15,9 @@ from apiclient.http import MediaFileUpload
 from oauth2client.client import OAuth2WebServerFlow
 
 
+Path = namedtuple('Path', ['id', 'date_modified'])
+
+
 def uploading_to(loc):
     def wrap(func):
         def print_info(*args, **kwargs):
@@ -21,6 +25,14 @@ def uploading_to(loc):
             return func(*args, **kwargs)
         return print_info
     return wrap
+
+
+def load_and_save_archive(func):
+    def wrapper(*args, **kwargs):
+        args[0]._load_archive()
+        func(*args, **kwargs)
+        args[0]._save_archive()
+    return wrapper
 
 
 def get_shelf(key, fallback=None):
@@ -85,21 +97,17 @@ class Backup():
         self.my_dropbox = my_dropbox
         self.my_google = my_google
 
-        self.Path = namedtuple('Path', ['id', 'modified_date'])
-        self.drive_archived = get_shelf('drive_archived', {})
-
-        self.drive_archived_files = get_shelf('drive_archived_files', {})
-        self.drive_archived_dirs = get_shelf('drive_archived_dirs', {})
+        self.drive_archived = self._load_archive()
 
     def __enter__(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_dir_path = self.temp_dir.name
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, *exc):
         path_to_zip = zip_dir(self.temp_dir_path)
         if self.my_google:
-            self.to_google_drive(self.temp_dir_path)
+            self.to_google_drive(path_to_zip)
         if self.my_dropbox:
             self.to_dropbox(path_to_zip)
         if self.clean:
@@ -111,43 +119,54 @@ class Backup():
     def to_dropbox(self, path):
         self.my_dropbox.upload_file(path, file_name="{}.zip".format(get_date(for_file=True)))
 
+    @load_and_save_archive
     def to_google_drive(self, path):
-        root_folder_id = self._get_drive_root_folder_id()
         if os.path.isdir(path):
-            # root_id = root_folder_id
             for root, dirs, files in scandir.walk(path):
-                # depth = root.count(os.sep) - path.count(os.sep)
                 dir_id = self._dir_to_drive(root)
                 for _file in files:
-                    self._file_to_drive(os.path.join(root, _file), dir_id)
-
-                # if modified_date(temp_path) > modified_date() or path not in self.google_files:
+                    if self._is_newer_date(os.path.join(root, _file)):
+                        self._file_to_drive(os.path.join(root, _file), dir_id)
         else:
-            self._file_to_drive(path, root_folder_id)
-
-        self._save_archive()
+            self._file_to_drive(path, self._get_drive_root_folder_id())
 
     def _save_archive(self):
-        set_shelf('drive_archived_files', self.drive_archived_files)
-        set_shelf('drive_archived_dirs', self.drive_archived_dirs)
+        set_shelf('drive_archived', self.drive_archived)
+
+    def _load_archive(self):
+        self.drive_archived = get_shelf('drive_archived', {})
 
     def _dir_to_drive(self, path):
-        parent_id = self.drive_archived_dirs.get(parent_dir(path), self._get_drive_root_folder_id())
+        try:
+            parent_id = self.drive_archived[parent_dir(path)].id
+        except KeyError:
+            parent_id = self._get_drive_root_folder_id()
 
         entry = os.path.abspath(path)
         try:
-            new_id = self.drive_archived_dirs[entry]
+            new_id = self.drive_archived[entry].id
         except KeyError:
             new_id = self.my_google.create_folder(name_from_path(entry, raw=True), parent_id=parent_id)
-            self.drive_archived_dirs[entry] = new_id
+            self.drive_archived[entry] = Path(id=new_id, date_modified=date_modified(entry))
         return new_id
 
     def _file_to_drive(self, path, folder_id):
         file_entry = os.path.abspath(path)
-        file_id = self.drive_archived_files.get(file_entry)
+        try:
+            file_id = self.drive_archived[file_entry].id
+        except KeyError:
+            file_id = None
         resp = self.my_google.upload_file(path, folder_id=folder_id, file_id=file_id)
-        self.drive_archived_files[file_entry] = resp['id']
+        self.drive_archived[file_entry] = Path(id=resp['id'], date_modified=date_modified(file_entry))
         return resp['id']
+
+    def _is_newer_date(self, path):
+        entry = os.path.abspath(path)
+        try:
+            modified_date = self.drive_archived[entry].date_modified
+            return date_modified(entry) > modified_date
+        except KeyError:
+            return True
 
     def _get_drive_root_folder_id(self):
         try:
@@ -155,46 +174,35 @@ class Backup():
         except KeyError:
             if not self.my_google.get_file_data_by_name("Backuper"):
                 folder_id = self.my_google.create_folder("Backuper")
-                self.config['GoogleDrive']['folder_id'] = folder_id
             else:
                 folder_id = self.my_google.get_file_data_by_name("Backuper")['id']
+            self.config['GoogleDrive']['folder_id'] = folder_id
 
         return folder_id
 
     def get_paths_to_backup(self):
-        # archived_files = {}
-        # result = []
-        # for section in self.config['Paths']:
-        #     t_result = []
-        #     for path in section:
-        #         path = os.path.realpath(path)
-        #         archived_files[path] = date_modified(path, walk=True)
-        #         try:
-        #             archived_file = get_shelf('archived_files')[path]
-        #         except KeyError:
-        #             t_result.append(path)
-        #             set_shelf('archived_files', archived_files)
-        #         else:
-        #             if self.newer_date_modified_exists(path, self.my_google.get_modified_date(archived_file)):
-        #                 t_result.append(path)
+        all_paths = {}
+        for section in self.config['Paths']:
+            paths = [os.path.abspath(path) for path in self.config['Paths'][section].split(';')]
+            all_paths[section] = paths
+        return all_paths
 
-        #     result.append(t_result)
-
-        # return result[0], result[1], result[2]
-
-        paths_to_backup = [os.path.realpath(path) for path in self.config['Paths']['paths_to_backup'].split(';')]
-        dir_only_paths = [os.path.realpath(path) for path in self.config['Paths']['dir_only_paths'].split(';')]
-        dirs_to_archive = [os.path.realpath(path) for path in self.config['Paths']['dirs_to_archive'].split(';')]
-        return paths_to_backup, dir_only_paths, dirs_to_archive
-
-    def newer_date_modified_exists(self, path, date):
-        for root, dirs, files in scandir.walk(path):
-            if date_modified(join(root, dirs)) > date:
-                return True
-        return False
-
+    @load_and_save_archive
     def _clear_shelf(self):
         clear_shelf(['credentials'])
+
+    @load_and_save_archive
+    def delete_from_drive(self, path):
+        path = os.path.abspath(path)
+        if path in self.drive_archived:
+            self.my_google.delete(self.drive_archived[path].id)
+            if os.path.isdir(path):
+                for root, dirs, files in scandir.walk(path):
+                    self.drive_archived.pop(root)
+                    for _file in files:
+                        self.drive_archived.pop(os.path.join(root, _file))
+            else:
+                self.drive_archived.pop(path)
 
     def write_backup_file(self, save_to=".", path=".", get_dirs_only=False):
         file_name = r"{}\{}".format(save_to, name_from_path(path, ".txt"))
@@ -309,6 +317,8 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
 
 
 class GoogleDrive:
+    CHUNK_SIZE = 4 * 1024 ** 2
+
     def __init__(self):
         self.config = Config()
         CLIENT_ID = self.config['GoogleDrive']['client_id']
@@ -348,20 +358,24 @@ class GoogleDrive:
 
     @uploading_to('Google Drive')
     def upload_file(self, file_path, folder_id='root', file_id=None):
+        mime, encoding = mimetypes.guess_type(file_path)
+        if mime is None:
+            mime = 'application/octet-stream'
+
         body = {
             'title': name_from_path(file_path, raw=True),
             'parents': [{'id': folder_id}]
         }
 
-        if getsize(file_path):
-            media_body = MediaFileUpload(file_path, chunksize=4 * 1024 ** 2, resumable=True)
+        if getsize(file_path) and getsize(file_path) < self.CHUNK_SIZE:
+            media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=False)
+            return self._determine_update_or_insert(body, media_body, file_id).execute()
+        elif getsize(file_path):
+            media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=True)
         else:
             return self.drive_service.files().insert(body=body).execute()
 
-        if file_id:
-            request = self.drive_service.files().update(fileId=file_id, body=body, media_body=media_body)
-        else:
-            request = self.drive_service.files().insert(body=body, media_body=media_body)
+        request = self._determine_update_or_insert(body, media_body, file_id=file_id)
 
         time_started = time.time()
         response = None
@@ -371,6 +385,11 @@ class GoogleDrive:
                 print(self.progress_bar(status, time_started), end="\r")
 
         return response
+
+    def _determine_update_or_insert(self, body, media_body, file_id=None):
+        if file_id:
+            return self.drive_service.files().update(fileId=file_id, body=body, media_body=media_body)
+        return self.drive_service.files().insert(body=body, media_body=media_body)
 
     @uploading_to('Google Drive')
     def upload_directory(self, dir_path, root_id='root'):
@@ -408,6 +427,9 @@ class GoogleDrive:
             if name == item['title']:
                 return item
 
+    def delete(self, file_id):
+        self.drive_service.files().delete(fileId=file_id).execute()
+
 # compare old new modified time
 # upload and replace (update) only newer file
 # 1 folder for all (no more DATE.zip)
@@ -423,5 +445,3 @@ Out[27]: '2015-06-05T14:59:19'
 In [28]: datetime.datetime.strptime('2015-06-05T14:59:19', '%Y-%m-%dT%H:%M:%S')
 Out[28]: datetime.datetime(2015, 6, 5, 14, 59, 19)
 """
-
-# path: (id, modified_date)
