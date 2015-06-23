@@ -1,25 +1,6 @@
 from files import structurebackup
 import tqdm
 
-# paths_to_backup = [r"c:\users\mare5\documents",
-#                    r"c:\users\mare5\projects",
-#                    r"c:\users\mare5\pictures",
-#                    r"d:\guitar",
-#                    r"c:\users\mare5\music",
-#                    r"d:\ebooks",
-#                    r"d:\art"]
-
-# dir_only_paths = [r"d:\downloads",
-#                   r"c:\program files",
-#                   r"c:\program files (x86)\osu!"]
-
-# dirs_to_archive = [r"c:\users\mare5\projects",
-#                    r"d:\ebooks\calibre",
-#                    r"c:\users\mare5\documents\šola",
-#                    r"d:\guitar\progress",
-#                    r"C:\Program Files (x86)\osu!\Screenshots",
-#                    r"C:\Program Files (x86)\osu!\Replays"]
-
 
 def backup(dropbox=True, google_drive=True, clean=True):
     if dropbox:
