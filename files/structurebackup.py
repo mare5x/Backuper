@@ -89,7 +89,7 @@ class Config(configparser.ConfigParser):
             self.write(configfile)
 
 
-class Backup():
+class Backup:
     def __init__(self, save_to_path=".", clean=False, my_dropbox=None, my_google=None):
         self.config = Config()
         self.temp_dir_path = save_to_path
@@ -97,7 +97,7 @@ class Backup():
         self.my_dropbox = my_dropbox
         self.my_google = my_google
 
-        self.drive_archived = self._load_archive()
+        self._load_archive()
 
     def __enter__(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -192,6 +192,10 @@ class Backup():
         clear_shelf(['credentials'])
 
     @load_and_save_archive
+    def clear_drive_archived(self):
+        self.drive_archived.clear()
+
+    @load_and_save_archive
     def delete_from_drive(self, path):
         path = os.path.abspath(path)
         if path in self.drive_archived:
@@ -211,11 +215,9 @@ class Backup():
                 log_structure(path, dirs_only=get_dirs_only)
 
 
-class Dropbox():
+class Dropbox:
     def __init__(self, overwrite=False):
         config = Config()
-        APPKEY = config["Dropbox"]["appkey"]
-        APPSECRET = config["Dropbox"]["appsecret"]
         ACCESSTOKEN = config["Dropbox"]["accesstoken"]
         try:
             self.client = dropbox.client.DropboxClient(ACCESSTOKEN)
@@ -367,10 +369,15 @@ class GoogleDrive:
             'parents': [{'id': folder_id}]
         }
 
-        if getsize(file_path) and getsize(file_path) < self.CHUNK_SIZE:
-            media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=False)
-            return self._determine_update_or_insert(body, media_body, file_id).execute()
-        elif getsize(file_path):
+        # if getsize(file_path) > 0 and getsize(file_path) > self.CHUNK_SIZE:
+        #     media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=True)
+        # elif getsize(file_path) > 0 and getsize(file_path) <= self.CHUNK_SIZE:
+        #     media_body = MediaFileUpload(file_path, mimetype=mime)
+        #     # return self._determine_update_or_insert(body, media_body, file_id=file_id).execute()
+        # else:
+        #     return self.drive_service.files().insert(body=body).execute()
+
+        if getsize(file_path):
             media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=True)
         else:
             return self.drive_service.files().insert(body=body).execute()
@@ -429,15 +436,6 @@ class GoogleDrive:
 
     def delete(self, file_id):
         self.drive_service.files().delete(fileId=file_id).execute()
-
-# compare old new modified time
-# upload and replace (update) only newer file
-# 1 folder for all (no more DATE.zip)
-#
-# file_path: modified_date
-# if date_modified is newer than current modified date in cloud
-
-# upload each file seperately, store it's id: modified_date
 
 """In [27]: g.drive_service.files().get(fileId=g.get_stored_file_id()).execute()['modifiedDate'].rsplit('.', 1)[0]
 Out[27]: '2015-06-05T14:59:19'
