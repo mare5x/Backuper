@@ -6,12 +6,14 @@ import shelve
 import configparser
 import tempfile
 import datetime
+import time
 from files.fileutils import *
 
 import dropbox
 import httplib2
 from apiclient.discovery import build
 from apiclient.http import MediaFileUpload
+from apiclient.errors import ResumableUploadError
 from oauth2client.client import OAuth2WebServerFlow
 
 
@@ -30,9 +32,24 @@ def uploading_to(loc):
 def load_and_save_archive(func):
     def wrapper(*args, **kwargs):
         args[0]._load_archive()
-        func(*args, **kwargs)
+        result = func(*args, **kwargs)
         args[0]._save_archive()
+        return result
     return wrapper
+
+
+def retry_operation(operation, *args, num_retries=0, error=None, wait_time=0, **kwargs):
+    retries = 0
+    while retries < num_retries or num_retries == 0:
+        try:
+            return operation(*args, **kwargs)
+        except error:
+            retries += 1
+            print('Retries for {}: {}'.format(operation, retries))
+            time.sleep(wait_time)
+            continue
+        break
+    return None
 
 
 def get_shelf(key, fallback=None):
@@ -119,16 +136,23 @@ class Backup:
     def to_dropbox(self, path):
         self.my_dropbox.upload_file(path, file_name="{}.zip".format(get_date(for_file=True)))
 
-    @load_and_save_archive
     def to_google_drive(self, path):
         if os.path.isdir(path):
             for root, dirs, files in scandir.walk(path):
-                dir_id = self._dir_to_drive(root)
+                dir_id = retry_operation(self._dir_to_drive, root, num_retries=120, wait_time=1, error=ResumableUploadError)
+                if dir_id is None:
+                    print('Skipped {}'.format(root))
+                    continue
                 for _file in files:
                     if self._is_newer_date(os.path.join(root, _file)):
-                        self._file_to_drive(os.path.join(root, _file), dir_id)
+                        if retry_operation(self._file_to_drive, os.path.join(root, _file), dir_id, num_retries=120,
+                                           wait_time=1, error=ResumableUploadError) is None:
+                            print('Skipped {}'.format(os.path.join(root, _file)))
+                            continue
         else:
-            self._file_to_drive(path, self._get_drive_root_folder_id())
+            if self._is_newer_date(path):
+                retry_operation(self._file_to_drive, path, self._get_drive_root_folder_id(), num_retries=120, wait_time=1,
+                                error=ResumableUploadError)
 
     def _save_archive(self):
         set_shelf('drive_archived', self.drive_archived)
@@ -136,6 +160,7 @@ class Backup:
     def _load_archive(self):
         self.drive_archived = get_shelf('drive_archived', {})
 
+    @load_and_save_archive
     def _dir_to_drive(self, path):
         try:
             parent_id = self.drive_archived[parent_dir(path)].id
@@ -150,6 +175,7 @@ class Backup:
             self.drive_archived[entry] = Path(id=new_id, date_modified=date_modified(entry))
         return new_id
 
+    @load_and_save_archive
     def _file_to_drive(self, path, folder_id):
         file_entry = os.path.abspath(path)
         try:
@@ -175,10 +201,15 @@ class Backup:
             if not self.my_google.get_file_data_by_name("Backuper"):
                 folder_id = self.my_google.create_folder("Backuper")
             else:
-                folder_id = self.my_google.get_file_data_by_name("Backuper")['id']
+                folder_id = self.my_google.get_file_data_by_name("Backuper")[0]['id']
             self.config['GoogleDrive']['folder_id'] = folder_id
 
         return folder_id
+
+    def _archive_remove_deleted_entries(self):
+        for path in self.drive_archived:
+            if not os.path.exists(path):
+                self.drive_archived.pop(path)
 
     def get_paths_to_backup(self):
         all_paths = {}
@@ -369,14 +400,6 @@ class GoogleDrive:
             'parents': [{'id': folder_id}]
         }
 
-        # if getsize(file_path) > 0 and getsize(file_path) > self.CHUNK_SIZE:
-        #     media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=True)
-        # elif getsize(file_path) > 0 and getsize(file_path) <= self.CHUNK_SIZE:
-        #     media_body = MediaFileUpload(file_path, mimetype=mime)
-        #     # return self._determine_update_or_insert(body, media_body, file_id=file_id).execute()
-        # else:
-        #     return self.drive_service.files().insert(body=body).execute()
-
         if getsize(file_path):
             media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=True)
         else:
@@ -430,9 +453,7 @@ class GoogleDrive:
         return self.drive_service.files().get(fileId=file_id).execute()
 
     def get_file_data_by_name(self, name):
-        for item in self.drive_service.files().list().execute()['items']:
-            if name == item['title']:
-                return item
+        return self.drive_service.files().list(q="title='{}'".format(name)).execute()['items']
 
     def delete(self, file_id):
         self.drive_service.files().delete(fileId=file_id).execute()
@@ -443,3 +464,6 @@ Out[27]: '2015-06-05T14:59:19'
 In [28]: datetime.datetime.strptime('2015-06-05T14:59:19', '%Y-%m-%dT%H:%M:%S')
 Out[28]: datetime.datetime(2015, 6, 5, 14, 59, 19)
 """
+
+# TODO: uploading show file being uploaded on same line (\r) and progress for whole process not just for individual files
+# TODO use database instead of shelves
