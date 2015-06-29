@@ -1,6 +1,7 @@
 structbackup_venv/
 .idea
-settings.*
 test/
 *.zip
 *.pyc
+*.db
+credentials.json

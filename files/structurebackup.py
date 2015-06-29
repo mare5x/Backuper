@@ -2,7 +2,6 @@
 
 from collections import namedtuple
 import mimetypes
-import shelve
 import configparser
 import tempfile
 import datetime
@@ -15,27 +14,41 @@ from apiclient.discovery import build
 from apiclient.http import MediaFileUpload
 from apiclient.errors import ResumableUploadError
 from oauth2client.client import OAuth2WebServerFlow
+from oauth2client.file import Storage
+from oauth2client.tools import run_flow
+from oauth2client import tools
+
+from peewee import *
 
 
-Path = namedtuple('Path', ['id', 'date_modified'])
+db = SqliteDatabase('archived.db')
+
+
+class BaseModel(Model):
+    path = TextField(unique=True)
+
+    class Meta:
+        database = db
+
+
+class DriveArchive(BaseModel):
+    drive_id = CharField(unique=True)
+    date_modified_on_disk = DateTimeField()
+
+
+class DropboxArchive(BaseModel):
+    dropbox_id = CharField(unique=True)
+    date_modified_on_disk = DateTimeField()
 
 
 def uploading_to(loc):
     def wrap(func):
         def print_info(*args, **kwargs):
-            print("Uploading {2} ({1}) to {0}".format(loc, get_file_size(*args[1:]), *args[1:]))
+            path = "\\".join(loc.rsplit('\\', 2)[-2:])
+            print("Uploading {2} ({1}) to {0}".format(path, get_file_size(*args[1:]), *args[1:]))
             return func(*args, **kwargs)
         return print_info
     return wrap
-
-
-def load_and_save_archive(func):
-    def wrapper(*args, **kwargs):
-        args[0]._load_archive()
-        result = func(*args, **kwargs)
-        args[0]._save_archive()
-        return result
-    return wrapper
 
 
 def retry_operation(operation, *args, num_retries=0, error=None, wait_time=0, **kwargs):
@@ -52,24 +65,22 @@ def retry_operation(operation, *args, num_retries=0, error=None, wait_time=0, **
     return None
 
 
-def get_shelf(key, fallback=None):
+def db_get(model, field, key, fallback=None):
     try:
-        with shelve.open('settings') as db:
-            return db[key]
-    except KeyError:
+        return model.get(field == key)
+    except model.DoesNotExist:
         return fallback
 
 
-def set_shelf(key, item):
-    with shelve.open('settings') as db:
-        db[key] = item
+def db_create(model, *args, **kwargs):
+    with db.atomic():
+        return model.create(*args, **kwargs)
 
 
-def clear_shelf(blacklist=None):
-    with shelve.open('settings') as db:
-        for item in db:
-            if item not in blacklist:
-                db.pop(item)
+def db_update(model, **kwargs):
+    for key, value in kwargs.items():
+        setattr(model, key, value)
+    return model.save()
 
 
 class Config(configparser.ConfigParser):
@@ -114,7 +125,8 @@ class Backup:
         self.my_dropbox = my_dropbox
         self.my_google = my_google
 
-        self._load_archive()
+        db.connect()
+        db.create_tables([DriveArchive, DropboxArchive], True)
 
     def __enter__(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -130,7 +142,7 @@ class Backup:
         if self.clean:
             remove_file(path_to_zip)
 
-        self._save_archive()
+        db.close()
         print("\nDONE")
 
     def to_dropbox(self, path):
@@ -139,59 +151,57 @@ class Backup:
     def to_google_drive(self, path):
         if os.path.isdir(path):
             for root, dirs, files in scandir.walk(path):
-                dir_id = retry_operation(self._dir_to_drive, root, num_retries=120, wait_time=1, error=ResumableUploadError)
+                dir_id = retry_operation(self._dir_to_drive, root, num_retries=60, wait_time=1, error=ResumableUploadError)
                 if dir_id is None:
                     print('Skipped {}'.format(root))
                     continue
                 for _file in files:
                     if self._is_newer_date(os.path.join(root, _file)):
-                        if retry_operation(self._file_to_drive, os.path.join(root, _file), dir_id, num_retries=120,
+                        if retry_operation(self._file_to_drive, os.path.join(root, _file), dir_id, num_retries=60,
                                            wait_time=1, error=ResumableUploadError) is None:
                             print('Skipped {}'.format(os.path.join(root, _file)))
                             continue
         else:
             if self._is_newer_date(path):
-                retry_operation(self._file_to_drive, path, self._get_drive_root_folder_id(), num_retries=120, wait_time=1,
+                retry_operation(self._file_to_drive, path, self._get_drive_root_folder_id(), num_retries=60, wait_time=1,
                                 error=ResumableUploadError)
 
-    def _save_archive(self):
-        set_shelf('drive_archived', self.drive_archived)
-
-    def _load_archive(self):
-        self.drive_archived = get_shelf('drive_archived', {})
-
-    @load_and_save_archive
     def _dir_to_drive(self, path):
         try:
-            parent_id = self.drive_archived[parent_dir(path)].id
-        except KeyError:
+            parent_id = DriveArchive.get(DriveArchive.path == parent_dir(path)).drive_id
+        except DriveArchive.DoesNotExist:
             parent_id = self._get_drive_root_folder_id()
 
         entry = os.path.abspath(path)
         try:
-            new_id = self.drive_archived[entry].id
-        except KeyError:
+            new_id = DriveArchive.get(DriveArchive.path == entry).drive_id
+        except DriveArchive.DoesNotExist:
             new_id = self.my_google.create_folder(name_from_path(entry, raw=True), parent_id=parent_id)
-            self.drive_archived[entry] = Path(id=new_id, date_modified=date_modified(entry))
+            db_create(DriveArchive, path=entry, drive_id=new_id, date_modified_on_disk=date_modified(entry))
         return new_id
 
-    @load_and_save_archive
     def _file_to_drive(self, path, folder_id):
         file_entry = os.path.abspath(path)
         try:
-            file_id = self.drive_archived[file_entry].id
-        except KeyError:
+            file_id = DriveArchive.get(DriveArchive.path == file_entry).drive_id
+        except DriveArchive.DoesNotExist:
             file_id = None
+
         resp = self.my_google.upload_file(path, folder_id=folder_id, file_id=file_id)
-        self.drive_archived[file_entry] = Path(id=resp['id'], date_modified=date_modified(file_entry))
+        try:
+            db_create(DriveArchive, path=file_entry, drive_id=resp['id'], date_modified_on_disk=date_modified(file_entry))
+        except IntegrityError:
+            model = DriveArchive.get(DriveArchive.path == file_entry)
+            db_update(model, path=file_entry, drive_id=resp['id'], date_modified_on_disk=date_modified(file_entry))
+
         return resp['id']
 
     def _is_newer_date(self, path):
         entry = os.path.abspath(path)
         try:
-            modified_date = self.drive_archived[entry].date_modified
+            modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
             return date_modified(entry) > modified_date
-        except KeyError:
+        except DriveArchive.DoesNotExist:
             return True
 
     def _get_drive_root_folder_id(self):
@@ -206,11 +216,6 @@ class Backup:
 
         return folder_id
 
-    def _archive_remove_deleted_entries(self):
-        for path in self.drive_archived:
-            if not os.path.exists(path):
-                self.drive_archived.pop(path)
-
     def get_paths_to_backup(self):
         all_paths = {}
         for section in self.config['Paths']:
@@ -218,15 +223,14 @@ class Backup:
             all_paths[section] = paths
         return all_paths
 
-    @load_and_save_archive
-    def _clear_shelf(self):
-        clear_shelf(['credentials'])
+    # def _archive_remove_deleted_entries(self):
+    #     for path in self.drive_archived:
+    #         if not os.path.exists(path):
+    #             self.drive_archived.pop(path)
 
-    @load_and_save_archive
-    def clear_drive_archived(self):
-        self.drive_archived.clear()
+    # def clear_drive_archived(self):
+    #     self.drive_archived.clear()
 
-    @load_and_save_archive
     def delete_from_drive(self, path):
         path = os.path.abspath(path)
         if path in self.drive_archived:
@@ -351,6 +355,7 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
 
 class GoogleDrive:
     CHUNK_SIZE = 4 * 1024 ** 2
+    CREDENTIALS_FILE = 'credentials.json'
 
     def __init__(self):
         self.config = Config()
@@ -359,22 +364,27 @@ class GoogleDrive:
         OAUTH_SCOPE = self.config['GoogleDrive']['oauth_scope']
         REDIRECT_URI = self.config['GoogleDrive']['redirect_uri']
 
-        credentials = get_shelf('credentials', None)
-
         flow = OAuth2WebServerFlow(CLIENT_ID, CLIENT_SECRET, OAUTH_SCOPE, redirect_uri=REDIRECT_URI)
-        http = httplib2.Http()
+        credential_storage = Storage(self.CREDENTIALS_FILE)
+        credentials = credential_storage.get()
+        if credentials is None or credentials.invalid:
+            flags = tools.argparser.parse_args(args=[])
+            credentials = run_flow(flow, credential_storage, flags)
 
-        while True:
-            try:
-                http = credentials.authorize(http)
-            except:
-                authorize_url = flow.step1_get_authorize_url()
-                print(authorize_url)
-                code = input("enter: ").strip()
-                credentials = flow.step2_exchange(code)
-                set_shelf('credentials', credentials)
-                continue
-            break
+        http = credentials.authorize(httplib2.Http())
+
+        # while True:
+        #     try:
+        #         credentials = client.OAuth2Credentials.from_json(get_shelf('credentials'))
+        #         http = credentials.authorize(httplib2.Http())
+        #     except:
+        #         authorize_url = flow.step1_get_authorize_url()
+        #         print(authorize_url)
+        #         code = input("enter: ").strip()
+        #         credentials = flow.step2_exchange(code)
+        #         set_shelf('credentials', credentials.to_json())
+        #         continue
+        #     break
 
         self.drive_service = build('drive', 'v2', http=http)
 
