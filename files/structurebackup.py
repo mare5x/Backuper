@@ -2,57 +2,104 @@
 
 from collections import namedtuple
 import mimetypes
-import shelve
 import configparser
 import tempfile
 import datetime
+import time
 from files.fileutils import *
 
 import dropbox
 import httplib2
 from apiclient.discovery import build
 from apiclient.http import MediaFileUpload
+from apiclient.errors import ResumableUploadError
 from oauth2client.client import OAuth2WebServerFlow
+from oauth2client.file import Storage
+from oauth2client.tools import run_flow
+from oauth2client import tools
+
+from peewee import *
 
 
-Path = namedtuple('Path', ['id', 'date_modified'])
+db = SqliteDatabase('archived.db')
 
 
-def uploading_to(loc):
+class BaseModel(Model):
+    path = TextField(unique=True)
+
+    class Meta:
+        database = db
+
+
+class DriveArchive(BaseModel):
+    drive_id = CharField(unique=True)
+    date_modified_on_disk = DateTimeField()
+
+
+class DropboxArchive(BaseModel):
+    dropbox_id = CharField(unique=True)
+    date_modified_on_disk = DateTimeField()
+
+
+def dynamic_print(s, fit=False):
+    if fit and len(str(s)) > term_width():
+        s = str(s)[-term_width():]
+    clear_line()
+    print(s, end='\r', flush=True)
+
+
+def clear_line():
+    cols = term_width()
+    print('\r' + (' ' * (cols - 1)), end='\r')
+
+
+def term_width():
+    return shutil.get_terminal_size()[0]
+
+
+def uploading_to(loc, dynamic=False):
     def wrap(func):
         def print_info(*args, **kwargs):
-            print("Uploading {2} ({1}) to {0}".format(loc, get_file_size(*args[1:]), *args[1:]))
+            path = "\\".join(args[1].rsplit('\\', 2)[-2:])
+            if dynamic:
+                dynamic_print("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc), True)
+            else:
+                print("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc))
             return func(*args, **kwargs)
         return print_info
     return wrap
 
 
-def load_and_save_archive(func):
-    def wrapper(*args, **kwargs):
-        args[0]._load_archive()
-        func(*args, **kwargs)
-        args[0]._save_archive()
-    return wrapper
+def retry_operation(operation, *args, num_retries=0, error=None, wait_time=0, **kwargs):
+    retries = 0
+    while retries < num_retries or num_retries == 0:
+        try:
+            return operation(*args, **kwargs)
+        except error:
+            retries += 1
+            dynamic_print('Retries for {}(): {}'.format(operation.__name__, retries), True)
+            time.sleep(wait_time)
+            continue
+        break
+    return None
 
 
-def get_shelf(key, fallback=None):
+def db_get(model, field, key, fallback=None):
     try:
-        with shelve.open('settings') as db:
-            return db[key]
-    except KeyError:
+        return model.get(field == key)
+    except model.DoesNotExist:
         return fallback
 
 
-def set_shelf(key, item):
-    with shelve.open('settings') as db:
-        db[key] = item
+def db_create(model, *args, **kwargs):
+    with db.atomic():
+        return model.create(*args, **kwargs)
 
 
-def clear_shelf(blacklist=None):
-    with shelve.open('settings') as db:
-        for item in db:
-            if item not in blacklist:
-                db.pop(item)
+def db_update(model, **kwargs):
+    for key, value in kwargs.items():
+        setattr(model, key, value)
+    return model.save()
 
 
 class Config(configparser.ConfigParser):
@@ -97,7 +144,8 @@ class Backup:
         self.my_dropbox = my_dropbox
         self.my_google = my_google
 
-        self._load_archive()
+        db.connect()
+        db.create_tables([DriveArchive, DropboxArchive], True)
 
     def __enter__(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -113,59 +161,69 @@ class Backup:
         if self.clean:
             remove_file(path_to_zip)
 
-        self._save_archive()
+        db.close()
         print("\nDONE")
 
     def to_dropbox(self, path):
         self.my_dropbox.upload_file(path, file_name="{}.zip".format(get_date(for_file=True)))
 
-    @load_and_save_archive
     def to_google_drive(self, path):
         if os.path.isdir(path):
             for root, dirs, files in scandir.walk(path):
-                dir_id = self._dir_to_drive(root)
+                dir_id = retry_operation(self._dir_to_drive, root, num_retries=60, wait_time=1, error=ResumableUploadError)
+                if dir_id is None:
+                    print('Skipped {}'.format(root))
+                    continue
                 for _file in files:
                     if self._is_newer_date(os.path.join(root, _file)):
-                        self._file_to_drive(os.path.join(root, _file), dir_id)
+                        if retry_operation(self._file_to_drive, os.path.join(root, _file), dir_id, num_retries=60,
+                                           wait_time=1, error=ResumableUploadError) is None:
+                            print('Skipped {}'.format(os.path.join(root, _file)))
+                            continue
         else:
-            self._file_to_drive(path, self._get_drive_root_folder_id())
-
-    def _save_archive(self):
-        set_shelf('drive_archived', self.drive_archived)
-
-    def _load_archive(self):
-        self.drive_archived = get_shelf('drive_archived', {})
+            if self._is_newer_date(path):
+                retry_operation(self._file_to_drive, path, self._get_drive_root_folder_id(), num_retries=60, wait_time=1,
+                                error=ResumableUploadError)
 
     def _dir_to_drive(self, path):
         try:
-            parent_id = self.drive_archived[parent_dir(path)].id
-        except KeyError:
+            parent_id = DriveArchive.get(DriveArchive.path == parent_dir(path)).drive_id
+        except DriveArchive.DoesNotExist:
             parent_id = self._get_drive_root_folder_id()
+
+        # if not self.my_google.exists(parent_id):
+        #     DriveArchive.delete_instance(DriveArchive.get(DriveArchive.drive_id == parent_id))
 
         entry = os.path.abspath(path)
         try:
-            new_id = self.drive_archived[entry].id
-        except KeyError:
+            new_id = DriveArchive.get(DriveArchive.path == entry).drive_id
+        except DriveArchive.DoesNotExist:
             new_id = self.my_google.create_folder(name_from_path(entry, raw=True), parent_id=parent_id)
-            self.drive_archived[entry] = Path(id=new_id, date_modified=date_modified(entry))
+            db_create(DriveArchive, path=entry, drive_id=new_id, date_modified_on_disk=date_modified(entry))
         return new_id
 
     def _file_to_drive(self, path, folder_id):
         file_entry = os.path.abspath(path)
         try:
-            file_id = self.drive_archived[file_entry].id
-        except KeyError:
+            file_id = DriveArchive.get(DriveArchive.path == file_entry).drive_id
+        except DriveArchive.DoesNotExist:
             file_id = None
+
         resp = self.my_google.upload_file(path, folder_id=folder_id, file_id=file_id)
-        self.drive_archived[file_entry] = Path(id=resp['id'], date_modified=date_modified(file_entry))
+        try:
+            db_create(DriveArchive, path=file_entry, drive_id=resp['id'], date_modified_on_disk=date_modified(file_entry))
+        except IntegrityError:
+            model = DriveArchive.get(DriveArchive.path == file_entry)
+            db_update(model, path=file_entry, drive_id=resp['id'], date_modified_on_disk=date_modified(file_entry))
+
         return resp['id']
 
     def _is_newer_date(self, path):
         entry = os.path.abspath(path)
         try:
-            modified_date = self.drive_archived[entry].date_modified
+            modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
             return date_modified(entry) > modified_date
-        except KeyError:
+        except DriveArchive.DoesNotExist:
             return True
 
     def _get_drive_root_folder_id(self):
@@ -175,7 +233,7 @@ class Backup:
             if not self.my_google.get_file_data_by_name("Backuper"):
                 folder_id = self.my_google.create_folder("Backuper")
             else:
-                folder_id = self.my_google.get_file_data_by_name("Backuper")['id']
+                folder_id = self.my_google.get_file_data_by_name("Backuper")[0]['id']
             self.config['GoogleDrive']['folder_id'] = folder_id
 
         return folder_id
@@ -187,15 +245,20 @@ class Backup:
             all_paths[section] = paths
         return all_paths
 
-    @load_and_save_archive
-    def _clear_shelf(self):
-        clear_shelf(['credentials'])
+    def clear_redundant_archives(self):
+        for archive in DriveArchive.select().where(os.path.exists(DriveArchive.path) == False):
+            self.my_google.delete(archive.drive_id)
 
-    @load_and_save_archive
-    def clear_drive_archived(self):
-        self.drive_archived.clear()
+        return DriveArchive.delete().where(os.path.exists(DriveArchive.path) == False).execute()
 
-    @load_and_save_archive
+    # def _archive_remove_deleted_entries(self):
+    #     for path in self.drive_archived:
+    #         if not os.path.exists(path):
+    #             self.drive_archived.pop(path)
+
+    # def clear_drive_archived(self):
+    #     self.drive_archived.clear()
+
     def delete_from_drive(self, path):
         path = os.path.abspath(path)
         if path in self.drive_archived:
@@ -242,7 +305,7 @@ class Dropbox:
     def get_file_name(self):
         return name_from_path(self.get_latest_file_metadata()['path'], raw=True)
 
-    @uploading_to('Dropbox')
+    @uploading_to('Dropbox', dynamic=True)
     def upload_file(self, file_path, file_name=None):
         with open(file_path, "rb") as f:
             file_size = getsize(file_path)
@@ -295,7 +358,7 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
         """
 
         while self.offset < self.target_length:
-            print(self.progress_bar(), end="\r")
+            dynamic_print(self.progress_bar(), True)
 
             next_chunk_size = min(chunk_size, self.target_length - self.offset)
             if self.last_block is None:
@@ -320,6 +383,7 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
 
 class GoogleDrive:
     CHUNK_SIZE = 4 * 1024 ** 2
+    CREDENTIALS_FILE = 'credentials.json'
 
     def __init__(self):
         self.config = Config()
@@ -328,22 +392,14 @@ class GoogleDrive:
         OAUTH_SCOPE = self.config['GoogleDrive']['oauth_scope']
         REDIRECT_URI = self.config['GoogleDrive']['redirect_uri']
 
-        credentials = get_shelf('credentials', None)
-
         flow = OAuth2WebServerFlow(CLIENT_ID, CLIENT_SECRET, OAUTH_SCOPE, redirect_uri=REDIRECT_URI)
-        http = httplib2.Http()
+        credential_storage = Storage(self.CREDENTIALS_FILE)
+        credentials = credential_storage.get()
+        if credentials is None or credentials.invalid:
+            flags = tools.argparser.parse_args(args=[])
+            credentials = run_flow(flow, credential_storage, flags)
 
-        while True:
-            try:
-                http = credentials.authorize(http)
-            except:
-                authorize_url = flow.step1_get_authorize_url()
-                print(authorize_url)
-                code = input("enter: ").strip()
-                credentials = flow.step2_exchange(code)
-                set_shelf('credentials', credentials)
-                continue
-            break
+        http = credentials.authorize(httplib2.Http())
 
         self.drive_service = build('drive', 'v2', http=http)
 
@@ -358,7 +414,7 @@ class GoogleDrive:
             return self.upload_directory(path, root_id=folder_id)
         return self.upload_file(path, folder_id=folder_id, file_id=file_id)
 
-    @uploading_to('Google Drive')
+    @uploading_to('Google Drive', dynamic=True)
     def upload_file(self, file_path, folder_id='root', file_id=None):
         mime, encoding = mimetypes.guess_type(file_path)
         if mime is None:
@@ -368,14 +424,6 @@ class GoogleDrive:
             'title': name_from_path(file_path, raw=True),
             'parents': [{'id': folder_id}]
         }
-
-        # if getsize(file_path) > 0 and getsize(file_path) > self.CHUNK_SIZE:
-        #     media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=True)
-        # elif getsize(file_path) > 0 and getsize(file_path) <= self.CHUNK_SIZE:
-        #     media_body = MediaFileUpload(file_path, mimetype=mime)
-        #     # return self._determine_update_or_insert(body, media_body, file_id=file_id).execute()
-        # else:
-        #     return self.drive_service.files().insert(body=body).execute()
 
         if getsize(file_path):
             media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=True)
@@ -389,7 +437,7 @@ class GoogleDrive:
         while response is None:
             status, response = request.next_chunk(num_retries=500)
             if status:
-                print(self.progress_bar(status, time_started), end="\r")
+                dynamic_print(self.progress_bar(status, time_started), True)
 
         return response
 
@@ -398,7 +446,7 @@ class GoogleDrive:
             return self.drive_service.files().update(fileId=file_id, body=body, media_body=media_body)
         return self.drive_service.files().insert(body=body, media_body=media_body)
 
-    @uploading_to('Google Drive')
+    @uploading_to('Google Drive', dynamic=True)
     def upload_directory(self, dir_path, root_id='root'):
         archived_dirs = {}
         for root, dirs, files in scandir.walk(dir_path):
@@ -430,16 +478,10 @@ class GoogleDrive:
         return self.drive_service.files().get(fileId=file_id).execute()
 
     def get_file_data_by_name(self, name):
-        for item in self.drive_service.files().list().execute()['items']:
-            if name == item['title']:
-                return item
+        return self.drive_service.files().list(q="title='{}'".format(name)).execute()['items']
 
     def delete(self, file_id):
         self.drive_service.files().delete(fileId=file_id).execute()
 
-"""In [27]: g.drive_service.files().get(fileId=g.get_stored_file_id()).execute()['modifiedDate'].rsplit('.', 1)[0]
-Out[27]: '2015-06-05T14:59:19'
-
-In [28]: datetime.datetime.strptime('2015-06-05T14:59:19', '%Y-%m-%dT%H:%M:%S')
-Out[28]: datetime.datetime(2015, 6, 5, 14, 59, 19)
-"""
+# TODO: uploading show file being uploaded on same line (\r) and progress for whole process not just for individual files
+# TODO: multithreaded sync
