@@ -41,11 +41,30 @@ class DropboxArchive(BaseModel):
     date_modified_on_disk = DateTimeField()
 
 
-def uploading_to(loc):
+def dynamic_print(s, fit=False):
+    if fit and len(str(s)) > term_width():
+        s = str(s)[-term_width():]
+    clear_line()
+    print(s, end='\r', flush=True)
+
+
+def clear_line():
+    cols = term_width()
+    print('\r' + (' ' * (cols - 1)), end='\r')
+
+
+def term_width():
+    return shutil.get_terminal_size()[0]
+
+
+def uploading_to(loc, dynamic=False):
     def wrap(func):
         def print_info(*args, **kwargs):
-            path = "\\".join(loc.rsplit('\\', 2)[-2:])
-            print("Uploading {2} ({1}) to {0}".format(path, get_file_size(*args[1:]), *args[1:]))
+            path = "\\".join(args[1].rsplit('\\', 2)[-2:])
+            if dynamic:
+                dynamic_print("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc), True)
+            else:
+                print("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc))
             return func(*args, **kwargs)
         return print_info
     return wrap
@@ -58,7 +77,7 @@ def retry_operation(operation, *args, num_retries=0, error=None, wait_time=0, **
             return operation(*args, **kwargs)
         except error:
             retries += 1
-            print('Retries for {}: {}'.format(operation, retries))
+            dynamic_print('Retries for {}(): {}'.format(operation.__name__, retries), True)
             time.sleep(wait_time)
             continue
         break
@@ -172,6 +191,9 @@ class Backup:
         except DriveArchive.DoesNotExist:
             parent_id = self._get_drive_root_folder_id()
 
+        # if not self.my_google.exists(parent_id):
+        #     DriveArchive.delete_instance(DriveArchive.get(DriveArchive.drive_id == parent_id))
+
         entry = os.path.abspath(path)
         try:
             new_id = DriveArchive.get(DriveArchive.path == entry).drive_id
@@ -222,6 +244,12 @@ class Backup:
             paths = [os.path.abspath(path) for path in self.config['Paths'][section].split(';')]
             all_paths[section] = paths
         return all_paths
+
+    def clear_redundant_archives(self):
+        for archive in DriveArchive.select().where(os.path.exists(DriveArchive.path) == False):
+            self.my_google.delete(archive.drive_id)
+
+        return DriveArchive.delete().where(os.path.exists(DriveArchive.path) == False).execute()
 
     # def _archive_remove_deleted_entries(self):
     #     for path in self.drive_archived:
@@ -277,7 +305,7 @@ class Dropbox:
     def get_file_name(self):
         return name_from_path(self.get_latest_file_metadata()['path'], raw=True)
 
-    @uploading_to('Dropbox')
+    @uploading_to('Dropbox', dynamic=True)
     def upload_file(self, file_path, file_name=None):
         with open(file_path, "rb") as f:
             file_size = getsize(file_path)
@@ -330,7 +358,7 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
         """
 
         while self.offset < self.target_length:
-            print(self.progress_bar(), end="\r")
+            dynamic_print(self.progress_bar(), True)
 
             next_chunk_size = min(chunk_size, self.target_length - self.offset)
             if self.last_block is None:
@@ -373,19 +401,6 @@ class GoogleDrive:
 
         http = credentials.authorize(httplib2.Http())
 
-        # while True:
-        #     try:
-        #         credentials = client.OAuth2Credentials.from_json(get_shelf('credentials'))
-        #         http = credentials.authorize(httplib2.Http())
-        #     except:
-        #         authorize_url = flow.step1_get_authorize_url()
-        #         print(authorize_url)
-        #         code = input("enter: ").strip()
-        #         credentials = flow.step2_exchange(code)
-        #         set_shelf('credentials', credentials.to_json())
-        #         continue
-        #     break
-
         self.drive_service = build('drive', 'v2', http=http)
 
     def progress_bar(self, status, time_started):
@@ -399,7 +414,7 @@ class GoogleDrive:
             return self.upload_directory(path, root_id=folder_id)
         return self.upload_file(path, folder_id=folder_id, file_id=file_id)
 
-    @uploading_to('Google Drive')
+    @uploading_to('Google Drive', dynamic=True)
     def upload_file(self, file_path, folder_id='root', file_id=None):
         mime, encoding = mimetypes.guess_type(file_path)
         if mime is None:
@@ -422,7 +437,7 @@ class GoogleDrive:
         while response is None:
             status, response = request.next_chunk(num_retries=500)
             if status:
-                print(self.progress_bar(status, time_started), end="\r")
+                dynamic_print(self.progress_bar(status, time_started), True)
 
         return response
 
@@ -431,7 +446,7 @@ class GoogleDrive:
             return self.drive_service.files().update(fileId=file_id, body=body, media_body=media_body)
         return self.drive_service.files().insert(body=body, media_body=media_body)
 
-    @uploading_to('Google Drive')
+    @uploading_to('Google Drive', dynamic=True)
     def upload_directory(self, dir_path, root_id='root'):
         archived_dirs = {}
         for root, dirs, files in scandir.walk(dir_path):
@@ -468,12 +483,11 @@ class GoogleDrive:
     def delete(self, file_id):
         self.drive_service.files().delete(fileId=file_id).execute()
 
-"""In [27]: g.drive_service.files().get(fileId=g.get_stored_file_id()).execute()['modifiedDate'].rsplit('.', 1)[0]
-Out[27]: '2015-06-05T14:59:19'
+    def exists(self, file_id):
+        if self.get_metadata(file_id) and not self.get_metadata(file_id)['labels']['trashed']:
+            return True
+        return False
 
-In [28]: datetime.datetime.strptime('2015-06-05T14:59:19', '%Y-%m-%dT%H:%M:%S')
-Out[28]: datetime.datetime(2015, 6, 5, 14, 59, 19)
-"""
 
 # TODO: uploading show file being uploaded on same line (\r) and progress for whole process not just for individual files
-# TODO use database instead of shelves
+# TODO: multithreaded sync

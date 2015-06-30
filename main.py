@@ -2,9 +2,6 @@ from files import structurebackup
 import tqdm
 
 
-Path = structurebackup.Path
-
-
 def backup(dropbox=False, google_drive=False, clean=True):
     if dropbox:
         my_dropbox = structurebackup.Dropbox(overwrite=True)
@@ -17,11 +14,11 @@ def backup(dropbox=False, google_drive=False, clean=True):
 
     with structurebackup.Backup(clean=clean, my_google=my_google, my_dropbox=my_dropbox) as bkup:
         paths = bkup.get_paths_to_backup()
-        # for path in tqdm.tqdm(paths['paths_to_backup']):
-        #     bkup.write_backup_file(save_to=bkup.temp_dir_path, path=path)
+        for path in tqdm.tqdm(paths['paths_to_backup']):
+            bkup.write_backup_file(save_to=bkup.temp_dir_path, path=path)
 
-        # for path in tqdm.tqdm(paths['dir_only_paths']):
-        #     bkup.write_backup_file(save_to=bkup.temp_dir_path, path=path, get_dirs_only=True)
+        for path in tqdm.tqdm(paths['dir_only_paths']):
+            bkup.write_backup_file(save_to=bkup.temp_dir_path, path=path, get_dirs_only=True)
 
         for path in tqdm.tqdm(paths['dirs_to_archive']):
             bkup.to_google_drive(path)
