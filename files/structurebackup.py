@@ -1,6 +1,5 @@
 #! python3
 
-from collections import namedtuple
 import mimetypes
 import configparser
 import tempfile
@@ -114,7 +113,8 @@ class Config(configparser.ConfigParser):
         self['Paths'] = {
             'paths_to_backup': '',
             'dir_only_paths': '',
-            'dirs_to_archive': ''
+            'dirs_to_archive': '',
+            'blacklisted': ''
         }
 
         self['Dropbox'] = {
@@ -131,6 +131,9 @@ class Config(configparser.ConfigParser):
             'folder_id': ''
         }
 
+    def get_section_values(self, section, sep=";"):
+        return section.split(sep)
+
     def write_to_config(self):
         with open('settings.ini', 'w') as configfile:
             self.write(configfile)
@@ -143,6 +146,8 @@ class Backup:
         self.clean = clean
         self.my_dropbox = my_dropbox
         self.my_google = my_google
+
+        self.blacklisted = self.config.get_section_values(self.config['Paths']['blacklisted'])
 
         db.connect()
         db.create_tables([DriveArchive, DropboxArchive], True)
@@ -170,11 +175,15 @@ class Backup:
     def to_google_drive(self, path):
         if os.path.isdir(path):
             for root, dirs, files in scandir.walk(path):
+                if os.path.abspath(root) in self.blacklisted:
+                    continue
                 dir_id = retry_operation(self._dir_to_drive, root, num_retries=60, wait_time=1, error=ResumableUploadError)
                 if dir_id is None:
                     print('Skipped {}'.format(root))
                     continue
                 for _file in files:
+                    if os.path.abspath(os.path.join(root, _file)) in self.blacklisted:
+                        continue
                     if self._is_newer_date(os.path.join(root, _file)):
                         if retry_operation(self._file_to_drive, os.path.join(root, _file), dir_id, num_retries=60,
                                            wait_time=1, error=ResumableUploadError) is None:
@@ -190,9 +199,6 @@ class Backup:
             parent_id = DriveArchive.get(DriveArchive.path == parent_dir(path)).drive_id
         except DriveArchive.DoesNotExist:
             parent_id = self._get_drive_root_folder_id()
-
-        # if not self.my_google.exists(parent_id):
-        #     DriveArchive.delete_instance(DriveArchive.get(DriveArchive.drive_id == parent_id))
 
         entry = os.path.abspath(path)
         try:
@@ -241,23 +247,34 @@ class Backup:
     def get_paths_to_backup(self):
         all_paths = {}
         for section in self.config['Paths']:
-            paths = [os.path.abspath(path) for path in self.config['Paths'][section].split(';')]
+            paths = [os.path.abspath(path) for path in self.config.get_section_values(section)]
             all_paths[section] = paths
         return all_paths
 
-    def clear_redundant_archives(self):
-        for archive in DriveArchive.select().where(os.path.exists(DriveArchive.path) == False):
-            self.my_google.delete(archive.drive_id)
+    def del_removed_from_local(self, log=False):
+        deleted = 0
+        for archive in DriveArchive.select():
+            if not os.path.exists(archive.path):
+                self.my_google.delete(archive.drive_id)
 
-        return DriveArchive.delete().where(os.path.exists(DriveArchive.path) == False).execute()
+                if log:
+                    dynamic_print("Removing {} from Google Drive".format(archive.path))
 
-    # def _archive_remove_deleted_entries(self):
-    #     for path in self.drive_archived:
-    #         if not os.path.exists(path):
-    #             self.drive_archived.pop(path)
+                deleted += DriveArchive.delete_instance(archive)
 
-    # def clear_drive_archived(self):
-    #     self.drive_archived.clear()
+        return deleted
+
+    def del_removed_from_drive(self, log=False):
+        current = {drive_id['id'] for drive_id in self.my_google.list_all(fields="items/id")}
+        previous = {archive.drive_id for archive in DriveArchive.select(DriveArchive.drive_id)}
+        removed_from_drive = previous - current
+
+        for archive in DriveArchive.select().where(DriveArchive.drive_id << removed_from_drive):
+            self.config['Paths']['blacklisted'] += archive.path + ';'
+
+            dynamic_print("Added {} to blacklist".format(archive.path))
+
+        return DriveArchive.delete().where(DriveArchive.drive_id << removed_from_drive)
 
     def delete_from_drive(self, path):
         path = os.path.abspath(path)
@@ -474,20 +491,40 @@ class GoogleDrive:
         return datetime.datetime.strptime(self.get_metadata(file_id)['modifiedDate'].rsplit('.', 1)[0],
                                           '%Y-%m-%dT%H:%M:%S')
 
-    def get_metadata(self, file_id):
-        return self.drive_service.files().get(fileId=file_id).execute()
+    def get_metadata(self, file_id, fields=None):
+        return self.drive_service.files().get(fileId=file_id, fields=fields).execute()
 
     def get_file_data_by_name(self, name):
-        return self.drive_service.files().list(q="title='{}'".format(name)).execute()['items']
+        return self.drive_service.files().list(q="title='{}'".format(name), fields='items').execute()['items']
+
+    def list_all(self, fields=None):
+        result = []
+        page_token = None
+        if fields:
+            fields = 'nextPageToken,' + fields
+
+        while True:
+            param = {'fields': fields}
+            if page_token:
+                param['pageToken'] = page_token
+            files = self.drive_service.files().list(**param).execute()
+
+            result.extend(files['items'])
+            page_token = files.get('nextPageToken')
+            if not page_token:
+                break
+
+        return result
 
     def delete(self, file_id):
         self.drive_service.files().delete(fileId=file_id).execute()
 
     def exists(self, file_id):
-        if self.get_metadata(file_id) and not self.get_metadata(file_id)['labels']['trashed']:
+        if self.get_metadata(file_id) and not self.get_metadata(file_id, 'labels/trashed')['labels']['trashed']:
             return True
         return False
 
 
 # TODO: uploading show file being uploaded on same line (\r) and progress for whole process not just for individual files
 # TODO: multithreaded sync
+# TODO: concurrent write_structure_to_file, seperate process for each for loop in main.py
