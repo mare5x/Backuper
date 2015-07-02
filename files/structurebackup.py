@@ -11,7 +11,7 @@ import dropbox
 import httplib2
 from apiclient.discovery import build
 from apiclient.http import MediaFileUpload
-from apiclient.errors import ResumableUploadError
+from apiclient.errors import ResumableUploadError, HttpError
 from oauth2client.client import OAuth2WebServerFlow
 from oauth2client.file import Storage
 from oauth2client.tools import run_flow
@@ -79,7 +79,7 @@ def retry_operation(operation, *args, num_retries=0, error=None, wait_time=0, **
             dynamic_print('Retries for {}(): {}'.format(operation.__name__, retries), True)
             time.sleep(wait_time)
             continue
-        break
+    print('{}({},{}) Failed'.format(operation.__name__, args, kwargs))
     return None
 
 
@@ -160,7 +160,7 @@ class Backup:
     def __exit__(self, *exc):
         path_to_zip = zip_dir(self.temp_dir_path)
         if self.my_google:
-            self.to_google_drive(path_to_zip)
+            self.my_google.upload(path_to_zip)
         if self.my_dropbox:
             self.to_dropbox(path_to_zip)
         if self.clean:
@@ -174,57 +174,74 @@ class Backup:
 
     def to_google_drive(self, path):
         if os.path.isdir(path):
-            for root, dirs, files in scandir.walk(path):
-                if os.path.abspath(root) in self.blacklisted:
-                    continue
-                dir_id = retry_operation(self._dir_to_drive, root, num_retries=60, wait_time=1, error=ResumableUploadError)
-                if dir_id is None:
-                    print('Skipped {}'.format(root))
-                    continue
-                for _file in files:
-                    if os.path.abspath(os.path.join(root, _file)) in self.blacklisted:
-                        continue
-                    if self._is_newer_date(os.path.join(root, _file)):
-                        if retry_operation(self._file_to_drive, os.path.join(root, _file), dir_id, num_retries=60,
-                                           wait_time=1, error=ResumableUploadError) is None:
-                            print('Skipped {}'.format(os.path.join(root, _file)))
-                            continue
-        else:
-            if self._is_newer_date(path):
-                retry_operation(self._file_to_drive, path, self._get_drive_root_folder_id(), num_retries=60, wait_time=1,
-                                error=ResumableUploadError)
+            for _path in self.get_paths_to_sync(path):
+                if os.path.isdir(_path):
+                    retry_operation(self.dir_to_drive, _path, num_retries=20, wait_time=1, error=ResumableUploadError)
+                else:
+                    retry_operation(self.file_to_drive, _path, num_retries=20, wait_time=1, error=ResumableUploadError)
+        elif self.is_newer_date(path):
+            retry_operation(self.file_to_drive, path, self.get_drive_root_folder_id(), num_retries=20, wait_time=1,
+                            error=ResumableUploadError)
 
-    def _dir_to_drive(self, path):
+        # if os.path.isdir(path):
+        #     for root, dirs, files in scandir.walk(path):
+        #         if os.path.abspath(root) in self.blacklisted:
+        #             continue
+        #         dir_id = retry_operation(self.dir_to_drive, root, num_retries=20, wait_time=1, error=ResumableUploadError)
+        #         if dir_id is None:
+        #             print('Skipped {}'.format(root))
+        #             continue
+        #         for _file in files:
+        #             if os.path.abspath(os.path.join(root, _file)) in self.blacklisted:
+        #                 continue
+        #             if self.is_newer_date(os.path.join(root, _file)):
+        #                 if retry_operation(self.file_to_drive, os.path.join(root, _file), dir_id, num_retries=20,
+        #                                    wait_time=1, error=ResumableUploadError) is None:
+        #                     print('Skipped {}'.format(os.path.join(root, _file)))
+        #                     continue
+        # else:
+        #     if self.is_newer_date(path):
+        #         retry_operation(self.file_to_drive, path, self.get_drive_root_folder_id(), num_retries=20, wait_time=1,
+        #                         error=ResumableUploadError)
+
+    def get_parent_folder_id(self, path):
         try:
-            parent_id = DriveArchive.get(DriveArchive.path == parent_dir(path)).drive_id
+            return DriveArchive.get(DriveArchive.path == parent_dir(path)).drive_id
         except DriveArchive.DoesNotExist:
-            parent_id = self._get_drive_root_folder_id()
+            return self.get_drive_root_folder_id()
 
+    def get_stored_file_id(self, path):
+        try:
+            return DriveArchive.get(DriveArchive.path == path).drive_id
+        except DriveArchive.DoesNotExist:
+            return None
+
+    def dir_to_drive(self, path):
         entry = os.path.abspath(path)
-        try:
-            new_id = DriveArchive.get(DriveArchive.path == entry).drive_id
-        except DriveArchive.DoesNotExist:
+        parent_id = self.get_parent_folder_id(entry)
+
+        new_id = self.get_stored_file_id(entry)
+        if new_id is None:
             new_id = self.my_google.create_folder(name_from_path(entry, raw=True), parent_id=parent_id)
             db_create(DriveArchive, path=entry, drive_id=new_id, date_modified_on_disk=date_modified(entry))
         return new_id
 
-    def _file_to_drive(self, path, folder_id):
-        file_entry = os.path.abspath(path)
-        try:
-            file_id = DriveArchive.get(DriveArchive.path == file_entry).drive_id
-        except DriveArchive.DoesNotExist:
-            file_id = None
+    def file_to_drive(self, path, folder_id=None):
+        entry = os.path.abspath(path)
+        if folder_id is None:
+            folder_id = self.get_parent_folder_id(entry)
+        file_id = self.get_stored_file_id(entry)
 
         resp = self.my_google.upload_file(path, folder_id=folder_id, file_id=file_id)
         try:
-            db_create(DriveArchive, path=file_entry, drive_id=resp['id'], date_modified_on_disk=date_modified(file_entry))
+            db_create(DriveArchive, path=entry, drive_id=resp['id'], date_modified_on_disk=date_modified(entry))
         except IntegrityError:
-            model = DriveArchive.get(DriveArchive.path == file_entry)
-            db_update(model, path=file_entry, drive_id=resp['id'], date_modified_on_disk=date_modified(file_entry))
+            model = DriveArchive.get(DriveArchive.path == entry)
+            db_update(model, path=entry, drive_id=resp['id'], date_modified_on_disk=date_modified(entry))
 
         return resp['id']
 
-    def _is_newer_date(self, path):
+    def is_newer_date(self, path):
         entry = os.path.abspath(path)
         try:
             modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
@@ -232,7 +249,7 @@ class Backup:
         except DriveArchive.DoesNotExist:
             return True
 
-    def _get_drive_root_folder_id(self):
+    def get_drive_root_folder_id(self):
         try:
             return self.config['GoogleDrive']['folder_id']
         except KeyError:
@@ -244,12 +261,23 @@ class Backup:
 
         return folder_id
 
-    def get_paths_to_backup(self):
+    def read_paths_to_backup(self):
         all_paths = {}
         for section in self.config['Paths']:
-            paths = [os.path.abspath(path) for path in self.config.get_section_values(section)]
+            paths = [os.path.abspath(path) for path in self.config.get_section_values(self.config['Paths'][section])]
             all_paths[section] = paths
         return all_paths
+
+    def get_paths_to_sync(self, path):
+        for root, dirs, files in scandir.walk(path):
+            if os.path.abspath(root) in self.blacklisted:
+                continue
+            if self.is_newer_date(root):
+                yield os.path.abspath(root)
+            for f in files:
+                f_path = os.path.abspath(os.path.join(root, f))
+                if f_path not in self.blacklisted and self.is_newer_date(f_path):
+                    yield f_path
 
     def del_removed_from_local(self, log=False):
         deleted = 0
@@ -266,27 +294,27 @@ class Backup:
 
     def del_removed_from_drive(self, log=False):
         current = {drive_id['id'] for drive_id in self.my_google.list_all(fields="items/id")}
-        previous = {archive.drive_id for archive in DriveArchive.select(DriveArchive.drive_id)}
-        removed_from_drive = previous - current
+        archived = {archive.drive_id for archive in DriveArchive.select(DriveArchive.drive_id)}
+        removed_from_drive = list(archived - current)
 
         for archive in DriveArchive.select().where(DriveArchive.drive_id << removed_from_drive):
             self.config['Paths']['blacklisted'] += archive.path + ';'
 
             dynamic_print("Added {} to blacklist".format(archive.path))
 
-        return DriveArchive.delete().where(DriveArchive.drive_id << removed_from_drive)
+        return DriveArchive.delete().where(DriveArchive.drive_id << removed_from_drive).execute()
 
-    def delete_from_drive(self, path):
-        path = os.path.abspath(path)
-        if path in self.drive_archived:
-            self.my_google.delete(self.drive_archived[path].id)
-            if os.path.isdir(path):
-                for root, dirs, files in scandir.walk(path):
-                    self.drive_archived.pop(root)
-                    for _file in files:
-                        self.drive_archived.pop(os.path.join(root, _file))
-            else:
-                self.drive_archived.pop(path)
+    # def delete_from_drive(self, path):
+    #     path = os.path.abspath(path)
+    #     if path in self.drive_archived:
+    #         self.my_google.delete(self.drive_archived[path].id)
+    #         if os.path.isdir(path):
+    #             for root, dirs, files in scandir.walk(path):
+    #                 self.drive_archived.pop(root)
+    #                 for _file in files:
+    #                     self.drive_archived.pop(os.path.join(root, _file))
+    #         else:
+    #             self.drive_archived.pop(path)
 
     def write_backup_file(self, save_to=".", path=".", get_dirs_only=False):
         file_name = r"{}\{}".format(save_to, name_from_path(path, ".txt"))
@@ -401,6 +429,7 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
 class GoogleDrive:
     CHUNK_SIZE = 4 * 1024 ** 2
     CREDENTIALS_FILE = 'credentials.json'
+    NUM_RETRIES = 5
 
     def __init__(self):
         self.config = Config()
@@ -431,6 +460,15 @@ class GoogleDrive:
             return self.upload_directory(path, root_id=folder_id)
         return self.upload_file(path, folder_id=folder_id, file_id=file_id)
 
+    def handle_progressless_attempt(self, error, progressless_attempt):
+        if progressless_attempt > self.NUM_RETRIES:
+            print('Failed to make progress.')
+            raise error
+
+        sleeptime = 0.5 * (2**progressless_attempt)
+        dynamic_print('Waiting for {}s before retry {}'.format(sleeptime, progressless_attempt))
+        time.sleep(sleeptime)
+
     @uploading_to('Google Drive', dynamic=True)
     def upload_file(self, file_path, folder_id='root', file_id=None):
         mime, encoding = mimetypes.guess_type(file_path)
@@ -450,11 +488,26 @@ class GoogleDrive:
         request = self._determine_update_or_insert(body, media_body, file_id=file_id)
 
         time_started = time.time()
+        progressless_attempt = 0
         response = None
         while response is None:
-            status, response = request.next_chunk(num_retries=500)
-            if status:
-                dynamic_print(self.progress_bar(status, time_started), True)
+            error = None
+            try:
+                progress, response = request.next_chunk(num_retries=500)
+                if progress:
+                    dynamic_print(self.progress_bar(progress, time_started), True)
+            except HttpError as err:
+                error = err
+                if err.resp.status < 500:
+                    raise
+            except (httplib2.HttpLib2Error, IOError) as err:
+                error = err
+
+            if error:
+                progressless_attempt += 1
+                handle_progressless_attempt(error, progressless_attempt)
+            else:
+                progressless_attempt = 0
 
         return response
 
@@ -528,3 +581,4 @@ class GoogleDrive:
 # TODO: uploading show file being uploaded on same line (\r) and progress for whole process not just for individual files
 # TODO: multithreaded sync
 # TODO: concurrent write_structure_to_file, seperate process for each for loop in main.py
+# TODO: get all files to sync and show progress based on all files left

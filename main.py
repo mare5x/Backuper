@@ -13,7 +13,7 @@ def backup(dropbox=False, google_drive=False, clean=True, delete_deleted=False):
         my_google = None
 
     with structurebackup.Backup(clean=clean, my_google=my_google, my_dropbox=my_dropbox) as bkup:
-        paths = bkup.get_paths_to_backup()
+        paths = bkup.read_paths_to_backup()
 
         if delete_deleted:
             bkup.del_removed_from_local(log=True)
