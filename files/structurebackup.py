@@ -5,6 +5,7 @@ import configparser
 import tempfile
 import datetime
 import time
+from contextlib import contextmanager
 from files.fileutils import *
 
 import dropbox
@@ -140,34 +141,21 @@ class Config(configparser.ConfigParser):
 
 
 class Backup:
-    def __init__(self, save_to_path=".", clean=False, my_dropbox=None, my_google=None):
+    def __init__(self, save_to_path=".", my_dropbox=None, my_google=None):
         self.config = Config()
-        self.temp_dir_path = save_to_path
-        self.clean = clean
         self.my_dropbox = my_dropbox
         self.my_google = my_google
 
-        self.blacklisted = self.config.get_section_values(self.config['Paths']['blacklisted'])
+        self.blacklisted = [os.path.abspath(path) for path in self.config.get_section_values(self.config['Paths']['blacklisted'])]
 
         db.connect()
         db.create_tables([DriveArchive, DropboxArchive], True)
 
     def __enter__(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.temp_dir_path = self.temp_dir.name
         return self
 
     def __exit__(self, *exc):
-        path_to_zip = zip_dir(self.temp_dir_path)
-        if self.my_google:
-            self.my_google.upload(path_to_zip)
-        if self.my_dropbox:
-            self.to_dropbox(path_to_zip)
-        if self.clean:
-            remove_file(path_to_zip)
-
         db.close()
-        print("\nDONE")
 
     def to_dropbox(self, path):
         self.my_dropbox.upload_file(path, file_name="{}.zip".format(get_date(for_file=True)))
@@ -179,30 +167,9 @@ class Backup:
                     retry_operation(self.dir_to_drive, _path, num_retries=20, wait_time=1, error=ResumableUploadError)
                 else:
                     retry_operation(self.file_to_drive, _path, num_retries=20, wait_time=1, error=ResumableUploadError)
-        elif self.is_newer_date(path):
+        elif self.is_for_sync(path):
             retry_operation(self.file_to_drive, path, self.get_drive_root_folder_id(), num_retries=20, wait_time=1,
                             error=ResumableUploadError)
-
-        # if os.path.isdir(path):
-        #     for root, dirs, files in scandir.walk(path):
-        #         if os.path.abspath(root) in self.blacklisted:
-        #             continue
-        #         dir_id = retry_operation(self.dir_to_drive, root, num_retries=20, wait_time=1, error=ResumableUploadError)
-        #         if dir_id is None:
-        #             print('Skipped {}'.format(root))
-        #             continue
-        #         for _file in files:
-        #             if os.path.abspath(os.path.join(root, _file)) in self.blacklisted:
-        #                 continue
-        #             if self.is_newer_date(os.path.join(root, _file)):
-        #                 if retry_operation(self.file_to_drive, os.path.join(root, _file), dir_id, num_retries=20,
-        #                                    wait_time=1, error=ResumableUploadError) is None:
-        #                     print('Skipped {}'.format(os.path.join(root, _file)))
-        #                     continue
-        # else:
-        #     if self.is_newer_date(path):
-        #         retry_operation(self.file_to_drive, path, self.get_drive_root_folder_id(), num_retries=20, wait_time=1,
-        #                         error=ResumableUploadError)
 
     def get_parent_folder_id(self, path):
         try:
@@ -241,7 +208,7 @@ class Backup:
 
         return resp['id']
 
-    def is_newer_date(self, path):
+    def is_for_sync(self, path):
         entry = os.path.abspath(path)
         try:
             modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
@@ -258,7 +225,17 @@ class Backup:
             else:
                 folder_id = self.my_google.get_file_data_by_name("Backuper")[0]['id']
             self.config['GoogleDrive']['folder_id'] = folder_id
+        return folder_id
 
+    def get_logs_folder_id(self):
+        try:
+            return self.config['GoogleDrive']['logs_folder_id']
+        except KeyError:
+            if self.my_google.get_file_data_by_name("Structure logs"):
+                folder_id = self.my_google.get_file_data_by_name("Structure logs")[0]['id']
+            else:
+                folder_id = self.my_google.create_folder("Structure logs", parent_id=self.get_drive_root_folder_id())
+            self.config['GoogleDrive']['logs_folder_id'] = folder_id
         return folder_id
 
     def read_paths_to_backup(self):
@@ -272,24 +249,23 @@ class Backup:
         for root, dirs, files in scandir.walk(path):
             if os.path.abspath(root) in self.blacklisted:
                 continue
-            if self.is_newer_date(root):
+            if self.is_for_sync(root):
                 yield os.path.abspath(root)
             for f in files:
                 f_path = os.path.abspath(os.path.join(root, f))
-                if f_path not in self.blacklisted and self.is_newer_date(f_path):
+                if f_path not in self.blacklisted and self.is_for_sync(f_path):
                     yield f_path
 
     def del_removed_from_local(self, log=False):
         deleted = 0
         for archive in DriveArchive.select():
-            if not os.path.exists(archive.path):
+            if not os.path.exists(archive.path) and self.my_google.exists(archive.drive_id):
                 self.my_google.delete(archive.drive_id)
 
                 if log:
                     dynamic_print("Removing {} from Google Drive".format(archive.path))
 
                 deleted += DriveArchive.delete_instance(archive)
-
         return deleted
 
     def del_removed_from_drive(self, log=False):
@@ -316,11 +292,20 @@ class Backup:
     #         else:
     #             self.drive_archived.pop(path)
 
-    def write_backup_file(self, save_to=".", path=".", get_dirs_only=False):
+    def write_log_structure(self, save_to=".", path=".", dirs_only=False):
         file_name = r"{}\{}".format(save_to, name_from_path(path, ".txt"))
         with open(file_name, "w", encoding="utf8") as f:
             with redirect_stdout(f):
-                log_structure(path, dirs_only=get_dirs_only)
+                log_structure(path, dirs_only=dirs_only)
+
+    @contextmanager
+    def temp_dir(self, clean=True):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            yield temp_dir
+            path_to_zip = zip_dir(temp_dir)
+            self.my_google.upload(path_to_zip, folder_id=self.get_logs_folder_id())
+            if clean:
+                remove_file(path_to_zip)
 
 
 class Dropbox:
@@ -499,6 +484,7 @@ class GoogleDrive:
             except HttpError as err:
                 error = err
                 if err.resp.status < 500:
+                    # print(err.resp.status)
                     raise
             except (httplib2.HttpLib2Error, IOError) as err:
                 error = err

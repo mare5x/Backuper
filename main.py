@@ -12,25 +12,24 @@ def backup(dropbox=False, google_drive=False, clean=True, delete_deleted=False):
     else:
         my_google = None
 
-    with structurebackup.Backup(clean=clean, my_google=my_google, my_dropbox=my_dropbox) as bkup:
+    with structurebackup.Backup(my_google=my_google, my_dropbox=my_dropbox) as bkup:
         paths = bkup.read_paths_to_backup()
 
+        bkup.del_removed_from_drive(log=True)
         if delete_deleted:
             bkup.del_removed_from_local(log=True)
 
-        bkup.del_removed_from_drive(log=True)
+        with bkup.temp_dir(clean=clean) as temp_dir_path:
+            for path in tqdm.tqdm(paths['paths_to_backup']):
+                bkup.write_log_structure(save_to=temp_dir_path, path=path)
 
-        for path in tqdm.tqdm(paths['paths_to_backup']):
-            bkup.write_backup_file(save_to=bkup.temp_dir_path, path=path)
-
-        for path in tqdm.tqdm(paths['dir_only_paths']):
-            bkup.write_backup_file(save_to=bkup.temp_dir_path, path=path, get_dirs_only=True)
+            for path in tqdm.tqdm(paths['dir_only_paths']):
+                bkup.write_log_structure(save_to=temp_dir_path, path=path, dirs_only=True)
 
         for path in tqdm.tqdm(paths['dirs_to_archive']):
             bkup.to_google_drive(path)
-        # for path in tqdm.tqdm(dirs_to_archive):
-        #     structurebackup.zip_dir(path, name=structurebackup.name_from_path(path), save_path=bkup.temp_dir_path + "\\")
 
+        print("\nDONE")
 
 def main():
     backup(google_drive=True, delete_deleted=True)
