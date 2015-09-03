@@ -6,3 +6,11 @@ test/
 *.db
 *.ini
 credentials.json
+
+Logs/
+
+*.sublime-project
+*.sublime-workspace
+
+.gitignore
+

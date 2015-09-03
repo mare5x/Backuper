@@ -5,8 +5,9 @@ import configparser
 import tempfile
 import datetime
 import time
+import logging
 from contextlib import contextmanager
-from files.fileutils import *
+from pytools.fileutils import *
 
 import dropbox
 import httplib2
@@ -42,8 +43,9 @@ class DropboxArchive(BaseModel):
 
 
 def dynamic_print(s, fit=False):
+    logging.info(s)
     if fit and len(str(s)) > term_width():
-        s = str(s)[-term_width():]
+        s = str(s)[-term_width() + 1:]
     clear_line()
     print(s, end='\r', flush=True)
 
@@ -60,11 +62,12 @@ def term_width():
 def uploading_to(loc, dynamic=False):
     def wrap(func):
         def print_info(*args, **kwargs):
+            logging.info(args[1])
             path = "\\".join(args[1].rsplit('\\', 2)[-2:])
             if dynamic:
                 dynamic_print("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc), True)
             else:
-                print("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc))
+                logging.info("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc))
             return func(*args, **kwargs)
         return print_info
     return wrap
@@ -80,7 +83,7 @@ def retry_operation(operation, *args, num_retries=0, error=None, wait_time=0, **
             dynamic_print('Retries for {}(): {}'.format(operation.__name__, retries), True)
             time.sleep(wait_time)
             continue
-    print('{}({},{}) Failed'.format(operation.__name__, args, kwargs))
+    logging.warning('{}({},{}) Failed'.format(operation.__name__, args, kwargs))
     return None
 
 
@@ -141,12 +144,26 @@ class Config(configparser.ConfigParser):
 
 
 class Backup:
-    def __init__(self, save_to_path=".", my_dropbox=None, my_google=None):
+    def __init__(self, save_to_path=".", my_dropbox=None, my_google=None, log=False):
         self.config = Config()
         self.my_dropbox = my_dropbox
         self.my_google = my_google
 
         self.blacklisted = [os.path.abspath(path) for path in self.config.get_section_values(self.config['Paths']['blacklisted'])]
+
+        if log:
+            os.makedirs("./Logs/", exist_ok=True)
+            log_file = create_filename("./Logs/{}.txt".format(get_date(True)))
+            self.blacklisted.append(log_file)
+            logging.basicConfig(filename=log_file,
+                                filemode='w',
+                                format="%(levelname)s:%(asctime)s: %(message)s",
+                                datefmt="%Y-%b-%d, %a %H:%M:%S",
+                                level=logging.INFO)
+            console = logging.StreamHandler()
+            formatter = logging.Formatter("%(message)s")
+            console.setFormatter(formatter)
+            logging.getLogger('structurebackup').addHandler(console)
 
         db.connect()
         db.create_tables([DriveArchive, DropboxArchive], True)
@@ -156,6 +173,7 @@ class Backup:
 
     def __exit__(self, *exc):
         db.close()
+        self.config.write_to_config()
 
     def to_dropbox(self, path):
         self.my_dropbox.upload_file(path, file_name="{}.zip".format(get_date(for_file=True)))
@@ -295,8 +313,7 @@ class Backup:
     def write_log_structure(self, save_to=".", path=".", dirs_only=False):
         file_name = r"{}\{}".format(save_to, name_from_path(path, ".txt"))
         with open(file_name, "w", encoding="utf8") as f:
-            with redirect_stdout(f):
-                log_structure(path, dirs_only=dirs_only)
+            log_structure(path, dirs_only=dirs_only, output=f)
 
     @contextmanager
     def temp_dir(self, clean=True):
@@ -315,7 +332,7 @@ class Dropbox:
         try:
             self.client = dropbox.client.DropboxClient(ACCESSTOKEN)
         except ValueError as e:
-            print(e, "\nFill in settings.ini")
+            logging.critical(e, "\nFill in settings.ini")
         self.overwrite = overwrite
 
     def get_latest_file_metadata(self):
@@ -346,7 +363,7 @@ class Dropbox:
                     uploader.upload_chunked()
                     break
                 except dropbox.exceptions.MaxRetryError as e:
-                    print("connection error, ", e, " retrying")
+                    logging.warning("connection error, ", e, " retrying")
                     time.sleep(1)
 
             if self.overwrite:
@@ -445,10 +462,13 @@ class GoogleDrive:
             return self.upload_directory(path, root_id=folder_id)
         return self.upload_file(path, folder_id=folder_id, file_id=file_id)
 
-    def handle_progressless_attempt(self, error, progressless_attempt):
+    def handle_progressless_attempt(self, error, progressless_attempt, skip=True):
         if progressless_attempt > self.NUM_RETRIES:
-            print('Failed to make progress.')
-            raise error
+            logging.critical('Failed to make progress.')
+            if not skip:
+                raise error
+            else:
+                return True
 
         sleeptime = 0.5 * (2**progressless_attempt)
         dynamic_print('Waiting for {}s before retry {}'.format(sleeptime, progressless_attempt))
@@ -483,15 +503,15 @@ class GoogleDrive:
                     dynamic_print(self.progress_bar(progress, time_started), True)
             except HttpError as err:
                 error = err
-                if err.resp.status < 500:
-                    # print(err.resp.status)
+                if err.resp.status != 403:
+                    logging.critical("HttpError response status: {}".format(err.resp.status))
                     raise
             except (httplib2.HttpLib2Error, IOError) as err:
                 error = err
 
             if error:
                 progressless_attempt += 1
-                handle_progressless_attempt(error, progressless_attempt)
+                self.handle_progressless_attempt(error, progressless_attempt)
             else:
                 progressless_attempt = 0
 
@@ -527,11 +547,16 @@ class GoogleDrive:
         return self.drive_service.files().insert(body=body).execute()['id']
 
     def get_modified_date(self, file_id):
-        return datetime.datetime.strptime(self.get_metadata(file_id)['modifiedDate'].rsplit('.', 1)[0],
-                                          '%Y-%m-%dT%H:%M:%S')
+        date = self.get_metadata(file_id)['modifiedDate'].rsplit('.', 1)[0]
+        if date:
+            return datetime.datetime.strptime(date, '%Y-%m-%dT%H:%M:%S')
 
     def get_metadata(self, file_id, fields=None):
-        return self.drive_service.files().get(fileId=file_id, fields=fields).execute()
+        try:
+            return self.drive_service.files().get(fileId=file_id, fields=fields).execute()
+        except HttpError as err:
+            logging.warning(err)
+            return None
 
     def get_file_data_by_name(self, name):
         return self.drive_service.files().list(q="title='{}'".format(name), fields='items').execute()['items']
@@ -556,7 +581,21 @@ class GoogleDrive:
         return result
 
     def delete(self, file_id):
-        self.drive_service.files().delete(fileId=file_id).execute()
+        progressless_attempt = 0
+        while True:
+            error = None
+            try:
+                return self.drive_service.files().delete(fileId=file_id).execute()
+            except HttpError as err:
+                error = err
+                # if err.resp.status < 500:
+                #     raise
+            if error:
+                progressless_attempt += 1
+                if self.handle_progressless_attempt(error, progressless_attempt):
+                    break
+            else:
+                progressless_attempt = 0
 
     def exists(self, file_id):
         if self.get_metadata(file_id) and not self.get_metadata(file_id, 'labels/trashed')['labels']['trashed']:
@@ -568,3 +607,5 @@ class GoogleDrive:
 # TODO: multithreaded sync
 # TODO: concurrent write_structure_to_file, seperate process for each for loop in main.py
 # TODO: get all files to sync and show progress based on all files left
+# TODO: create logger
+# TODO: wrap every google operation with httperror protection
