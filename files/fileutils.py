@@ -1,3 +1,5 @@
+# DEPRECATED -- IN PYTOOLS.FILEUTILS!
+
 from datetime import datetime as dtime
 from time import strftime, gmtime
 import time
@@ -40,16 +42,19 @@ def date_modified(path, pretty=False, walk=False):
 def name_from_path(path, end="", raw=False):
     path = os.path.realpath(path)
     if raw:
-        return r"{}".format(path.rsplit("\\", 1)[-1])
+        return os.path.basename(path)
     else:
-        return r"{}_{}_BACKUP{}".format(get_date(for_file=True), path.rsplit("\\", 1)[-1], end)
+        return r"{}_{}_BACKUP{}".format(get_date(for_file=True), os.path.basename(path), end)
 
 
 def log_structure(path=".", dirs_only=False):
     print("Logging on {}\n".format(get_date()))
 
     for root, dirs, files in scandir.walk(path):
-        root_size = sum(getsize(join(root, name)) for name in files)
+        try:
+            root_size = sum(getsize(join(root, name)) for name in files)
+        except PermissionError:
+            pass
 
         # dirs[:] is by reference, dirs = is assignment
         dirs[:] = [_dir for _dir in dirs if not _dir.startswith(BLACK_LIST_DIRS_PREFIX)
@@ -116,7 +121,27 @@ def convert_file_size(_bytes):
     else:
         return "{:.2f} KB".format(kb)
 
+
 def parent_dir(path, rel=False):
     if rel:
         return os.path.relpath(os.path.join(path, os.pardir))
     return os.path.abspath(os.path.join(path, os.pardir))
+
+
+def create_filename(full_path):
+    """ c:/users/asdfasf/asdf.exe -> c:/users/asdfasf/asdf (1).exe
+        asdf.exe -> asdf (1).exe
+    """
+
+    l_path, r_path = os.path.split(full_path)
+    filename, extension = os.path.splitext(r_path)
+    if not os.path.exists(full_path):
+        return os.path.abspath(full_path)
+
+    index = 1
+    new_path = os.path.abspath(os.path.join(l_path, "{} ({}){}".format(filename, index, extension)))
+    while os.path.exists(new_path):
+        index += 1
+        new_path = os.path.abspath(os.path.join(l_path, "{} ({}){}".format(filename, index, extension)))
+
+    return new_path
