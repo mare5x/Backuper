@@ -122,7 +122,7 @@ class GoogleDrive:
     @uploading_to('Google Drive', dynamic=True)
     def upload_directory(self, dir_path, root_id='root'):
         archived_dirs = {}
-        for root, dirs, files in scandir.walk(dir_path):
+        for root, dirs, files in walk(dir_path):
             parent_id = archived_dirs.get(parent_dir(root), root_id)
 
             try:
