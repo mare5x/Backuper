@@ -35,7 +35,7 @@ class Config(configparser.ConfigParser):
             'redirect_uri': '',
             'folder_id': '',
             'last_backup_date': '',
-            'last_change_id': ''
+            'last_change_token': ''
         }
 
     def get_section_values(self, section, sep=";"):
@@ -49,7 +49,7 @@ class Config(configparser.ConfigParser):
 def dynamic_print(s, fit=False):
     logging.info(s)
     if fit and len(str(s)) > term_width():
-        s = str(s)[-term_width() + 1:]
+        s = str(s)[-term_width() + 4:]
     clear_line()
     print(s, end='\r', flush=True)
 
@@ -99,7 +99,8 @@ def handle_progressless_attempt(error, progressless_attempt, suppress=True, retr
         else:
             return True
 
-    sleeptime = 0.5 * (2**progressless_attempt)
+    sleeptime = 2**progressless_attempt
+    # add tqdm
     dynamic_print('Waiting for {}s before retry {}'.format(sleeptime, progressless_attempt))
     time.sleep(sleeptime)
 

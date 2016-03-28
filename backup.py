@@ -3,6 +3,7 @@
 import tempfile
 import logging
 import datetime
+import concurrent.futures
 from contextlib import contextmanager
 
 from pytools.fileutils import *
@@ -14,6 +15,8 @@ from apiclient.errors import ResumableUploadError
 
 from peewee import *
 from peewee import OperationalError
+
+from tqdm import tqdm
 
 
 db = SqliteDatabase('archived.db')
@@ -54,11 +57,57 @@ def db_update(model, **kwargs):
     return model.save()
 
 
+def backup(dropbox=False, google_drive=True, backup_paths=True, blacklist=True, delete_deleted=False, log_structures=False, log=True):
+    with Backup(google=google_drive, my_dropbox=dropbox, log=log) as bkup:
+        paths = bkup.read_paths_to_backup()
+
+        if blacklist:
+            bkup.blacklist_removed_from_gdrive(log=True)
+
+        if delete_deleted:
+            bkup.del_removed_from_local(progress=True)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            if log_structures:
+                executor.submit(upload_log_structures, bkup)
+
+            if backup_paths:
+                executor.submit(backup_dirs_to_gdrive, bkup, paths['dirs_to_archive'])
+
+        print("\nDONE")
+
+
+def upload_log_structures(bkup, clean=True):
+    paths = bkup.read_paths_to_backup()
+    with bkup.temp_dir(clean=clean) as temp_dir_path:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            for path in paths['paths_to_backup']:
+                executor.submit(bkup.write_log_structure, save_to=temp_dir_path, path=path)
+
+            for path in paths['dir_only_paths']:
+                executor.submit(bkup.write_log_structure, save_to=temp_dir_path, path=path, dirs_only=True)
+
+
+def backup_dirs_to_gdrive(bkup, paths=None, threads=8):
+    if paths is None:
+        paths = bkup.read_paths_to_backup()['dirs_to_archive']
+
+    if threads <= 1:
+        for path in paths:
+            if bkup.google is None:
+                bkup.google = GoogleDrive()
+            bkup.to_google_drive(path)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+            for path in paths:
+                executor.submit(bkup.to_google_drive, path)
+
+
 class Backup:
-    def __init__(self, save_to_path=".", my_dropbox=None, google=None, log=False):
+    def __init__(self, save_to_path=".", my_dropbox=False, google=True, log=False):
         self.config = Config()
-        self.my_dropbox = my_dropbox
-        self.google = google
+        self.my_dropbox = Dropbox(overwrite=True) if my_dropbox else None
+        self.google = GoogleDrive() if google else None
 
         self.blacklisted = [unify_path(path) for path in self.config.get_section_values(self.config['Paths']['blacklisted'])]
 
@@ -89,16 +138,14 @@ class Backup:
     def to_dropbox(self, path):
         self.my_dropbox.upload_file(path, file_name="{}.zip".format(get_date(for_file=True)))
 
-    def to_google_drive(self, path, google=None):
-        if google is None:
-            google = self.google
-
+    def to_google_drive(self, path):
         if os.path.isdir(path):
-            for _path in self.get_paths_to_sync(path):
-                if os.path.isdir(_path):
-                    retry_operation(self.dir_to_drive, _path, num_retries=5, wait_time=1, error=ResumableUploadError)
-                else:
-                    retry_operation(self.file_to_drive, _path, num_retries=5, wait_time=1, error=ResumableUploadError)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                for _path in self.get_paths_to_sync(path):
+                    if os.path.isdir(_path):
+                        executor.submit(retry_operation, self.dir_to_drive, _path, num_retries=5, wait_time=1, error=ResumableUploadError)
+                    else:
+                        executor.submit(retry_operation, self.file_to_drive, _path, num_retries=5, wait_time=1, error=ResumableUploadError)
             self.write_last_backup_date()
         elif self.is_for_sync(path):
             retry_operation(self.file_to_drive, path, self.get_drive_root_folder_id(), num_retries=5, wait_time=1,
@@ -117,29 +164,23 @@ class Backup:
         except DriveArchive.DoesNotExist:
             return None
 
-    def dir_to_drive(self, path, google=None):
-        if google is None:
-            google = self.google
-
+    def dir_to_drive(self, path):
         entry = unify_path(path)
         parent_id = self.get_parent_folder_id(entry)
 
         new_id = self.get_stored_file_id(entry)
         if new_id is None:
-            new_id = google.create_folder(name_from_path(path, raw=True), parent_id=parent_id)
+            new_id = self.google.create_folder(name_from_path(path, raw=True), parent_id=parent_id)
             db_create(DriveArchive, path=entry, drive_id=new_id, date_modified_on_disk=date_modified(entry))
         return new_id
 
-    def file_to_drive(self, path, folder_id=None, google=None):
-        if google is None:
-            google = self.google
-
+    def file_to_drive(self, path, folder_id=None):
         entry = unify_path(path)
         if folder_id is None:
             folder_id = self.get_parent_folder_id(entry)
         file_id = self.get_stored_file_id(entry)
 
-        resp = google.upload_file(path, folder_id=folder_id, file_id=file_id)
+        resp = self.google.upload_file(path, folder_id=folder_id, file_id=file_id)
         try:
             db_create(DriveArchive, path=entry, drive_id=resp['id'], date_modified_on_disk=date_modified(entry))
         except IntegrityError:
@@ -148,31 +189,25 @@ class Backup:
 
         return resp['id']
 
-    def get_drive_root_folder_id(self, google=None):
-        if google is None:
-            google = self.google
-
+    def get_drive_root_folder_id(self):
         try:
             return self.config['GoogleDrive']['folder_id']
         except KeyError:
-            if not google.get_file_data_by_name("Backuper"):
-                folder_id = google.create_folder("Backuper")
+            if not self.google.get_file_data_by_name("Backuper"):
+                folder_id = self.google.create_folder("Backuper")
             else:
-                folder_id = google.get_file_data_by_name("Backuper")[0]['id']
+                folder_id = self.google.get_file_data_by_name("Backuper")[0]['id']
             self.config['GoogleDrive']['folder_id'] = folder_id
         return folder_id
 
-    def get_logs_folder_id(self, google=None):
-        if google is None:
-            google = self.google
-
+    def get_logs_folder_id(self):
         try:
             return self.config['GoogleDrive']['logs_folder_id']
         except KeyError:
-            if google.get_file_data_by_name("Structure logs"):
-                folder_id = google.get_file_data_by_name("Structure logs")[0]['id']
+            if self.google.get_file_data_by_name("Structure logs"):
+                folder_id = self.google.get_file_data_by_name("Structure logs")[0]['id']
             else:
-                folder_id = google.create_folder("Structure logs", parent_id=self.get_drive_root_folder_id())
+                folder_id = self.google.create_folder("Structure logs", parent_id=self.get_drive_root_folder_id())
             self.config['GoogleDrive']['logs_folder_id'] = folder_id
         return folder_id
 
@@ -213,63 +248,79 @@ class Backup:
                                              '%Y-%m-%dT%H:%M:%S')
         return self.config['GoogleDrive']['last_backup_date']
 
-    def get_last_change_id(self):
-        return int(self.config['GoogleDrive']['last_change_id'])
+    def get_last_change_token(self):
+        if not self.config['GoogleDrive']['last_change_token']:
+            return self.google.get_start_page_token()
+        return int(self.config['GoogleDrive']['last_change_token'])
 
-    def write_last_change_id(self, change_id):
-        self.config['GoogleDrive']['last_change_id'] = str(change_id)
+    def write_last_change_token(self, change_id):
+        self.config['GoogleDrive']['last_change_token'] = str(change_id)
 
-    def get_drive_last_removed(self, update_last_change_id=False, google=None):
-        if google is None:
-            google = self.google
+    def get_drive_last_removed(self, update_last_change_token=True):
+        changes = self.google.get_changes(start_page_token=self.get_last_change_token(),
+                                 fields="changes(removed,time,fileId,file(name,modifiedTime,trashed))")
 
-        changes = google.get_changes(start_change_id=self.get_last_change_id(),
-                                 fields="largestChangeId,items(deleted,modificationDate,fileId,file(title,modifiedDate,labels/trashed))")
-        result = []
-        for change in changes['items']:
-            if change['deleted'] or change.get('file', {}).get('labels', {}).get('trashed'):
-                result.append(change['fileId'])
+        # result = []
+        for change in changes:
+            if change['removed'] or change.get('file', {}).get('trashed'):
+                # result.append(change['fileId'])
+                yield change['fileId']
 
-        if update_last_change_id:
-            self.write_last_change_id(changes.get('largestChangeId', self.get_last_change_id()))
-        return result
+        if update_last_change_token:
+            self.write_last_change_token(self.google.get_start_page_token())
 
-# for i in g.drive_service.changes().list(includeSubscribed=False, maxResults=1000).execute()['items']:
-#     if datetime.datetime.strptime(i['modificationDate'].rsplit('.')[0], '%Y-%m-%dT%H:%M:%S') > datetime.datetime(2015, 9, 4):
-#         print(i)
-# g.drive_service.changes().list(includeSubscribed=False, maxResults=1000, pageToken=285800, fields="items(deleted,modificationDate,fileId,file(title,modifiedDate,labels/trashed))").execute()['items']
-    def del_removed_from_local(self, log=False, google=None):
-        if google is None:
-            google = self.google
+        # return result
 
-        deleted = 0
-        for archive in DriveArchive.select():
-            if not os.path.exists(archive.path) and google.exists(archive.drive_id):
-                google.delete(archive.drive_id)
+    def blacklist_removed_from_gdrive(self, log=False):
+        for removed_file_id in self.get_drive_last_removed():
+        # removed_from_drive = self.get_drive_last_removed()
+            try:
+                archive = DriveArchive.select().where(DriveArchive.drive_id == removed_file_id).get()
+            except DriveArchive.DoesNotExist:
+                archive = None
 
-                if log:
-                    dynamic_print("Removing {} from Google Drive".format(archive.path))
+            if archive:
+                if os.path.exists(archive.path):
+                    self.config['Paths']['blacklisted'] += archive.path + ';'
+                    dynamic_print("Added {} to blacklist".format(archive.path))
 
-                deleted += DriveArchive.delete_instance(archive)
-        return deleted
+                archive.delete_instance()
 
-    def del_removed_from_drive(self, log=False):
-        # current = {item['id'] for item in google.drive_service.files().list(
-        #            q="modifiedDate > '{}'".format(self.get_last_backup_date())).execute()['items']}
+            # for archive in DriveArchive.select().where(DriveArchive.drive_id << removed_from_drive):
 
-        # current = {drive_id['id'] for drive_id in google.list_all(fields="items/id")}
-        # archived = {archive.drive_id for archive in DriveArchive.select(DriveArchive.drive_id)}
-        # archived = {archive.drive_id for archive in DriveArchive.select(DriveArchive.drive_id).where(
-        #                                             DriveArchive.date_modified_on_disk > self.get_last_backup_date(True))}
-        # removed_from_drive = list(archived - current)
+        # return DriveArchive.delete().where(DriveArchive.drive_id << removed_from_drive).execute()
 
-        removed_from_drive = self.get_drive_last_removed(update_last_change_id=True)
+    def del_removed_from_local(self, progress=True):
+        # paths_to_delete = []  # list of drive_ids
+        # for archive in DriveArchive.select().naive().iterator():
+        #     if not os.path.exists(archive.path):
+        #         paths_to_delete.append(archive.drive_id)
 
-        for archive in DriveArchive.select().where(DriveArchive.drive_id << removed_from_drive):
-            self.config['Paths']['blacklisted'] += archive.path + ';'
+        #         if progress:
+        #             dynamic_print("Removing {} from Google Drive".format(archive.path))
 
-            dynamic_print("Added {} to blacklist".format(archive.path))
-        return DriveArchive.delete().where(DriveArchive.drive_id << removed_from_drive).execute()
+        # self.google.batch_delete(paths_to_delete)  # ignore 404 errors
+        # DriveArchive.delete().where(DriveArchive.drive_id << paths_to_delete).execute()
+
+        print("Deleting files removed from disk from Google Drive ...")
+
+        files_to_delete = 0
+        for archive in DriveArchive.select().naive().iterator():
+            if not os.path.exists(archive.path):
+                files_to_delete += 1
+
+        # 3 threads so google doesn't cry
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor, tqdm(total=files_to_delete) as pbar:
+            future_to_archive = {}
+            for archive in DriveArchive.select().naive().iterator():
+                if not os.path.exists(archive.path):
+                    future_to_archive[executor.submit(self.google.delete, archive.drive_id)] = archive
+
+            for future in concurrent.futures.as_completed(future_to_archive):
+                if progress:
+                    pbar.update()
+
+                future_to_archive[future].delete_instance()
 
     def write_log_structure(self, save_to=".", path=".", dirs_only=False):
         file_name = r"{}\{}".format(save_to, name_from_path(path, ".txt"))
@@ -277,14 +328,11 @@ class Backup:
             log_structure(path, dirs_only=dirs_only, output=f)
 
     @contextmanager
-    def temp_dir(self, clean=True, google=None):
-        if google is None:
-            google = self.google
-
+    def temp_dir(self, clean=True):
         with tempfile.TemporaryDirectory() as temp_dir:
             yield temp_dir
             path_to_zip = zip_dir(temp_dir)
-            google.upload(path_to_zip, folder_id=self.get_logs_folder_id())
+            self.google.upload(path_to_zip, folder_id=self.get_logs_folder_id())
             if clean:
                 remove_file(path_to_zip)
 
