@@ -37,16 +37,6 @@ class handle_http_error(ContextDecorator):
                 return True
 
             for retry in range(NUM_RETRIES):
-                # if excinst.resp.status != 403:
-                #     try:
-                #         error = json.loads(excinst.content.decode('utf-8'))
-                #     except ValueError:
-                #         # could not load json
-                #         error = {}
-
-                #     logging.error(error.get('code', excinst.resp.status))
-                #     logging.error(error.get('message'))
-
                 if handle_progressless_attempt(error, retry, retries=NUM_RETRIES):
                     if self._silent:
                         return True
@@ -113,7 +103,7 @@ class GoogleDrive:
             mime = 'application/octet-stream'
 
         body = {
-            'name': name_from_path(file_path, raw=True),
+            'name': real_case_filename(file_path),
             'parents': [folder_id]
         }
 
@@ -149,7 +139,7 @@ class GoogleDrive:
             try:
                 dir_id = archived_dirs[os.path.abspath(root)]
             except KeyError:
-                dir_id = self.create_folder(name_from_path(root, raw=True), parent_id=parent_id)
+                dir_id = self.create_folder(real_case_filename(root), parent_id=parent_id)
                 archived_dirs[os.path.abspath(root)] = dir_id
 
             for _file in files:
@@ -174,6 +164,10 @@ class GoogleDrive:
     def get_metadata(self, file_id, fields=None):
         return self.drive_service.files().get(fileId=file_id, fields=fields).execute()
 
+    def update_metadata(self, file_id, fields=None, **kwargs):
+        if kwargs:
+            return self.drive_service.files().update(fileId=file_id, body=kwargs, fields=fields).execute()
+
     def get_file_data_by_name(self, name):
         return self.drive_service.files().list(q="name='{}'".format(name), fields='files').execute()['files']
 
@@ -194,7 +188,6 @@ class GoogleDrive:
         for _id in ids:
             if requests_in_batch >= self.BATCH_LIMIT:
                 _batch.execute()
-                time.sleep(1)
                 requests_in_batch = 0
 
             _batch.add(self.drive_service.files().delete(fileId=_id))

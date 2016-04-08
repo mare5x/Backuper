@@ -11,12 +11,16 @@ from .sharedtools import *
 from .dropbox import Dropbox
 from .googledrive import GoogleDrive
 
-from apiclient.errors import ResumableUploadError
+from apiclient.errors import ResumableUploadError, HttpError
 
 from peewee import *
 from peewee import OperationalError
 
 from tqdm import tqdm
+
+
+MAX_THREADS = 6
+RETRYABLE_ERRORS = (ResumableUploadError, HttpError)
 
 
 db = SqliteDatabase('archived.db')
@@ -88,17 +92,15 @@ def upload_log_structures(bkup, clean=True):
                 executor.submit(bkup.write_log_structure, save_to=temp_dir_path, path=path, dirs_only=True)
 
 
-def backup_dirs_to_gdrive(bkup, paths=None, threads=8):
+def backup_dirs_to_gdrive(bkup, paths=None):
     if paths is None:
         paths = bkup.read_paths_to_backup()['dirs_to_archive']
 
-    if threads <= 1:
+    if MAX_THREADS <= 1:
         for path in paths:
-            if bkup.google is None:
-                bkup.google = GoogleDrive()
             bkup.to_google_drive(path)
     else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
             for path in paths:
                 executor.submit(bkup.to_google_drive, path)
 
@@ -117,11 +119,11 @@ class Backup:
             self.blacklisted.append(unify_path(log_file))
             logging.basicConfig(filename=log_file,
                                 filemode='w',
-                                format="%(levelname)s:%(asctime)s:%(threadName)s: %(message)s",
+                                format=u"%(levelname)s:%(asctime)s:%(threadName)s: %(message)s",
                                 datefmt="%Y-%b-%d, %a %H:%M:%S",
                                 level=logging.INFO)
             console = logging.StreamHandler()
-            formatter = logging.Formatter("%(message)s")
+            formatter = logging.Formatter(u"%(message)s")
             console.setFormatter(formatter)
             logging.getLogger('structurebackup').addHandler(console)
 
@@ -140,16 +142,13 @@ class Backup:
 
     def to_google_drive(self, path):
         if os.path.isdir(path):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-                for _path in self.get_paths_to_sync(path):
-                    if os.path.isdir(_path):
-                        executor.submit(retry_operation, self.dir_to_drive, _path, num_retries=5, wait_time=1, error=ResumableUploadError)
-                    else:
-                        executor.submit(retry_operation, self.file_to_drive, _path, num_retries=5, wait_time=1, error=ResumableUploadError)
+            self.make_folder_structure(path)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+                for file_path in self.get_files_to_sync(path):
+                    executor.submit(retry_operation, self.file_to_drive, file_path, error=RETRYABLE_ERRORS)
             self.write_last_backup_date()
         elif self.is_for_sync(path):
-            retry_operation(self.file_to_drive, path, self.get_drive_root_folder_id(), num_retries=5, wait_time=1,
-                            error=ResumableUploadError)
+            retry_operation(self.file_to_drive, path, self.get_drive_root_folder_id(), error=RETRYABLE_ERRORS)
             self.write_last_backup_date()
 
     def get_parent_folder_id(self, path):
@@ -168,11 +167,15 @@ class Backup:
         entry = unify_path(path)
         parent_id = self.get_parent_folder_id(entry)
 
-        new_id = self.get_stored_file_id(entry)
-        if new_id is None:
-            new_id = self.google.create_folder(name_from_path(path, raw=True), parent_id=parent_id)
-            db_create(DriveArchive, path=entry, drive_id=new_id, date_modified_on_disk=date_modified(entry))
-        return new_id
+        folder_id = self.get_stored_file_id(entry)
+        if folder_id is None:
+            folder_id = self.google.create_folder(real_case_filename(entry), parent_id=parent_id)
+            db_create(DriveArchive, path=entry, drive_id=folder_id, date_modified_on_disk=date_modified(entry))
+        else:  # update database metadata (modified on disk date)
+            model = DriveArchive.get(DriveArchive.path == entry)
+            db_update(model, path=entry, drive_id=folder_id, date_modified_on_disk=date_modified(entry))
+
+        return folder_id
 
     def file_to_drive(self, path, folder_id=None):
         entry = unify_path(path)
@@ -221,22 +224,46 @@ class Backup:
     def is_for_sync(self, path):
         entry = unify_path(path)
         try:
-            modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
-            return date_modified(entry) > modified_date
+            stored_modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
+            # folder already exists in google drive
+            return date_modified(entry) > stored_modified_date if not os.path.isdir(entry) else False
         except DriveArchive.DoesNotExist:
             return True
 
-    def get_paths_to_sync(self, path):
+    def get_all_paths_to_sync(self, path):
         for root, dirs, files in walk(path):
             unified_root = unify_path(root)
             if unified_root in self.blacklisted:
                 continue
             if self.is_for_sync(unified_root):
-                yield root
+                yield unified_root
             for f in files:
                 f_path = unify_path(os.path.join(unified_root, f))
                 if f_path not in self.blacklisted and self.is_for_sync(f_path):
-                    yield os.path.join(root, f)
+                    yield f_path
+
+    def get_files_to_sync(self, path):
+        for root, dirs, files in walk(path):
+            unified_root = unify_path(root)
+            if unified_root in self.blacklisted:
+                continue
+            for f in files:
+                f_path = unify_path(os.path.join(unified_root, f))
+                if f_path not in self.blacklisted and self.is_for_sync(f_path):
+                    yield f_path
+
+    def get_folders_to_sync(self, path):
+        for root, dirs, files in walk(path):
+            unified_root = unify_path(root)
+            if unified_root in self.blacklisted:
+                continue
+            if self.is_for_sync(unified_root):
+                yield unified_root
+
+    def make_folder_structure(self, path):
+        print("Making folder structure in Google Drive for {} ...".format(path))
+        for folder_path in self.get_folders_to_sync(path):
+            self.dir_to_drive(folder_path)
 
     def write_last_backup_date(self):
         self.config['GoogleDrive']['last_backup_date'] = datetime.datetime.utcnow().isoformat('T') + 'Z'
@@ -282,7 +309,7 @@ class Backup:
             if archive:
                 if os.path.exists(archive.path):
                     self.config['Paths']['blacklisted'] += archive.path + ';'
-                    dynamic_print("Added {} to blacklist".format(archive.path))
+                    dynamic_print("Added {} to blacklist".format(archive.path), True)
 
                 archive.delete_instance()
 
@@ -335,6 +362,48 @@ class Backup:
             self.google.upload(path_to_zip, folder_id=self.get_logs_folder_id())
             if clean:
                 remove_file(path_to_zip)
+
+    def rebuild_database(self):
+        """
+        Rebuild database by removing non-existent files in Google Drive.
+
+        Used for maintenance.
+        """
+        print("Rebuilding database ...")
+        logging.info("rebuild_database()")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor, \
+                        tqdm(total=DriveArchive.select().count()) as pbar:
+            futures = {}
+            for archive in DriveArchive.select().naive().iterator():
+                futures[executor.submit(retry_operation, self.google.exists, archive.drive_id, error=RETRYABLE_ERRORS)] = archive
+
+            for future in concurrent.futures.as_completed(futures):
+                pbar.update()
+
+                if not future.result():  # doesn't exist
+                    archive = futures[future]
+                    if not os.path.exists(archive.path) or unify_path(archive.path) not in self.blacklisted:
+                        logging.info("Removed {} from database.".format(archive.path))
+                        archive.delete_instance()
+
+    def update_google_drive_metadata(self):
+        """
+        Change file names in Google Drive to their original local file system counterparts (for Windows).
+        """
+        print("Updating file names in Google Drive to their original local system counterparts ...")
+        logging.info("update_google_drive_metadata()")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor, \
+                        tqdm(total=DriveArchive.select().count()) as pbar:
+            futures = []
+            for archive in DriveArchive.select().naive().iterator():
+                futures.append(executor.submit(retry_operation, self.google.update_metadata, archive.drive_id,
+                                               name=real_case_filename(archive.path), error=RETRYABLE_ERRORS))
+
+            for _ in concurrent.futures.as_completed(futures):
+                pbar.update()
+
 
 # TODO: uploading show file being uploaded on same line (\r) and progress for whole process not just for individual files
 # TODO: get all files to sync and show progress based on all files left
