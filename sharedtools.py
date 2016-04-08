@@ -54,8 +54,9 @@ class ANSI_ESC_CODES:
     ERASE_LINE = "\x1b[2K\r"
 
 
-def dynamic_print(s, fit=False):
-    logging.info(s)
+def dynamic_print(s, fit=False, log=True):
+    if log:
+        logging.info(s)
     if fit and len(str(s)) > term_width() - 1:
         s = str(s)[-term_width() + 4:]
     clear_line()

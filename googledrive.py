@@ -1,6 +1,6 @@
 import httplib2
 from apiclient.discovery import build
-from apiclient.http import MediaFileUpload, HttpRequest
+from apiclient.http import MediaFileUpload, HttpRequest, MediaIoBaseDownload
 from apiclient.errors import ResumableUploadError, HttpError
 from oauth2client.client import OAuth2WebServerFlow, flow_from_clientsecrets
 from oauth2client.file import Storage
@@ -19,6 +19,7 @@ from .sharedtools import *
 
 
 NUM_RETRIES = 6
+RETRYABLE_HTTP_ERROR_CODES = (403, 500)
 
 
 class handle_http_error(ContextDecorator):
@@ -33,16 +34,17 @@ class handle_http_error(ContextDecorator):
         if exctype is HttpError:
             logging.error(str(excinst))
 
-            if self._suppress or excinst.resp.status == 404:  # error 404 -> ignore (file is missing etc ...)
+            if self._suppress:
                 return True
 
-            for retry in range(NUM_RETRIES):
-                if handle_progressless_attempt(error, retry, retries=NUM_RETRIES):
-                    if self._silent:
-                        return True
-                    return False
+            if excinst.resp.status == 404:  # error 404 -> ignore (file is missing etc ...)
+                return True
 
-            return False
+            if excinst.resp.status in RETRYABLE_HTTP_ERROR_CODES:
+                for retry in range(NUM_RETRIES):
+                    if handle_progressless_attempt(error, retry, retries=NUM_RETRIES):
+                        if self._silent:
+                            return True
 
 
 _batch_error_counter = 0
@@ -61,7 +63,8 @@ def _batch_error_suppressor(request_id, response, exception):
 
 
 class GoogleDrive:
-    CHUNK_SIZE = 4 * 1024 ** 2
+    UPLOAD_CHUNK_SIZE = 4 * 1024 ** 2
+    DOWNLOAD_CHUNK_SIZE = 4 * 1024 ** 2
     BATCH_LIMIT = 5
     QPS_LIMIT = 10  # 10 queries per second
     CREDENTIALS_FILE = 'credentials.json'
@@ -85,11 +88,60 @@ class GoogleDrive:
         http = self.credentials.authorize(httplib2.Http())
         return HttpRequest(http, *args, **kwargs)
 
-    def progress_bar(self, status, time_started):
+    def print_progress_bar(self, status, time_started, type_bit):
+        """
+        Args:
+            status: MediaDownloadProgress or MediaUploadProgress
+            time_started: time.time()
+            type_bit: if type_bit == 1 then output 'downloaded', if type_bit == 0 then output 'uploaded'
+
+        Returns:
+            None (prints to stdout using '\r')
+        """
+
         time_left = ((time.time() - time_started) / status.progress()) - (time.time() - time_started)
-        return "{:.2f}% uploaded [elapsed: {}, left: {}]".format(status.progress() * 100,
-                                                                 format_seconds(time.time() - time_started),
-                                                                 format_seconds(time_left))
+        dynamic_print("{progress:.2f}% {status_type} [elapsed: {elapsed}, left: {left}]".format(
+                progress=status.progress() * 100,
+                status_type="downloaded" if type_bit else "uploaded",
+                elapsed=format_seconds(time.time() - time_started),
+                left=format_seconds(time_left)), log=False, fit=True)
+
+    def download(self, file_id, save_path, filename=None):
+        """
+        Download a file.
+
+        Args:
+            file_id: file id
+            save_path: str to a directory
+            filename: join filename to save_path if given, otherwise fetch file name from Google Drive
+        Returns:
+            if successful: str, download path
+            else: file_id
+        """
+
+        if filename is None:
+            filename = self.get_metadata(file_id, fields="name")
+            if filename:
+                filename = filename['name']
+            else:
+                return file_id
+
+        os.makedirs(save_path, exist_ok=True)
+        download_path = os.path.abspath(os.path.join(save_path, filename))
+
+        logging.info("Downloading {} to {}".format(file_id, download_path))
+
+        request = self.drive_service.files().get_media(fileId=file_id)
+        with open(download_path, 'wb') as file:
+            downloader = MediaIoBaseDownload(file, request, chunksize=self.DOWNLOAD_CHUNK_SIZE)
+
+            time_started = time.time()
+            done = False
+            while not done:
+                status, done = downloader.next_chunk(num_retries=NUM_RETRIES)
+                self.print_progress_bar(status, time_started, 1)
+
+        return download_path
 
     def upload(self, path, folder_id='root', file_id=None):
         if os.path.isdir(path):
@@ -108,7 +160,7 @@ class GoogleDrive:
         }
 
         if getsize(file_path):
-            media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.CHUNK_SIZE, resumable=True)
+            media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.UPLOAD_CHUNK_SIZE, resumable=True)
         else:
             return self.drive_service.files().create(body=body).execute()
 
@@ -120,7 +172,7 @@ class GoogleDrive:
             with handle_http_error(silent=True, suppress=False):
                 progress, response = request.next_chunk(num_retries=5)
                 if progress:
-                    dynamic_print(self.progress_bar(progress, time_started), True)
+                    self.print_progress_bar(progress, time_started, 0)
 
         return response
 
