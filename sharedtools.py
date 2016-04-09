@@ -125,7 +125,6 @@ def real_case_filename(path):
     "c:/users/mare5/projects/backuper/logs/2016_apr_01.txt" -> 2016_Apr_01.txt
     "c:/users/mare5/projects/backuper/logs" -> Logs
     """
-
     path = glob.escape(os.path.abspath(path))  # if file name has a ?, * or [
     name = "{}[{}]".format(path[:-1], path[-1])
     found_path = glob.glob(name)

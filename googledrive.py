@@ -13,6 +13,7 @@ import time
 import logging
 import datetime
 import mimetypes
+import concurrent.futures
 from contextlib import ContextDecorator
 
 from .sharedtools import *
@@ -106,7 +107,48 @@ class GoogleDrive:
                 elapsed=format_seconds(time.time() - time_started),
                 left=format_seconds(time_left)), log=False, fit=True)
 
-    def download(self, file_id, save_path, filename=None):
+    def download_folder_builder(self, folder_id, save_path, folder_name=None):
+        """
+        Recursively yield download_file function arguments for a folder and all its content.
+        Args:
+            folder_id: folder id
+            save_path: str to a directory
+            folder_name: join folder_name to save_path if given, otherwise fetch folder name from Google Drive
+        Yields:
+            (file_id, save_path, filename) -> args for download_file
+        """
+        if folder_name is None:
+            folder_name = self.get_id_name(folder_id)
+            if not folder_name:
+                return
+
+        download_root_path = os.path.abspath(os.path.join(save_path, folder_name))
+        os.makedirs(download_root_path, exist_ok=True)
+
+        for file in self.get_files_in_folder(folder_id):
+            yield file['id'], download_root_path, file['name']
+
+        for folder in self.get_folders_in_folder(folder_id):
+            yield from self.download_folder_builder(folder['id'], download_root_path, folder_name=folder['name'])
+
+    def download_folder(self, folder_id, save_path, folder_name=None):
+        """
+        Recursively download a folder and all its content.
+
+        Args:
+            folder_id: folder id
+            save_path: str to a directory
+            folder_name: join folder_name to save_path if given, otherwise fetch folder name from Google Drive
+        """
+        for file_id, download_root_path, filename in self.download_folder_builder(folder_id, save_path, folder_name=folder_name):
+            self.download_file(file_id, download_root_path, filename)
+
+    def threaded_download_folder(self, folder_id, save_path, folder_name=None):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            for args in self.download_folder_builder(folder_id, save_path, folder_name=folder_name):
+                executor.submit(retry_operation, self.download_file, *args)
+
+    def download_file(self, file_id, save_path, filename=None):
         """
         Download a file.
 
@@ -116,15 +158,13 @@ class GoogleDrive:
             filename: join filename to save_path if given, otherwise fetch file name from Google Drive
         Returns:
             if successful: str, download path
-            else: file_id
+            else: None
         """
 
         if filename is None:
-            filename = self.get_metadata(file_id, fields="name")
-            if filename:
-                filename = filename['name']
-            else:
-                return file_id
+            filename = self.get_id_name(file_id)
+            if not filename:
+                return
 
         os.makedirs(save_path, exist_ok=True)
         download_path = os.path.abspath(os.path.join(save_path, filename))
@@ -220,8 +260,57 @@ class GoogleDrive:
         if kwargs:
             return self.drive_service.files().update(fileId=file_id, body=kwargs, fields=fields).execute()
 
+    def get_id_name(self, file_id):
+        filename = self.get_metadata(file_id, fields="name")
+        if filename:
+            return filename['name']
+
     def get_file_data_by_name(self, name):
         return self.drive_service.files().list(q="name='{}'".format(name), fields='files').execute()['files']
+
+    def get_files_in_folder(self, folder_id, fields="files(trashed, id, name)"):
+        """
+        Yields all (non-trashed) files in a folder (direct children) with fields metadata. Doesn't include folders.
+        Note:
+            MUST include files(trashed) in fields argument.
+        """
+        if 'nextPageToken' not in fields:
+            fields += ',nextPageToken'
+
+        request = self.drive_service.files().list(q="mimeType!='application/vnd.google-apps.folder' "
+                                                    "and '{folder_id}' in parents".format(folder_id=folder_id),
+                                                  fields=fields)
+        while request is not None:
+            response = request.execute()
+
+            for file in response['files']:
+                if not file['trashed']:
+                    file.pop('trashed')
+                    yield file
+
+            request = self.drive_service.files().list_next(request, response)
+
+    def get_folders_in_folder(self, folder_id, fields="files(trashed, id, name)"):
+        """
+        Yields all (non-trashed) folders in a folder (direct children) with fields metadata.
+        Note:
+            MUST include files(trashed) in fields argument.
+        """
+        if 'nextPageToken' not in fields:
+            fields += ',nextPageToken'
+
+        request = self.drive_service.files().list(q="mimeType='application/vnd.google-apps.folder' "
+                                                    "and '{folder_id}' in parents".format(folder_id=folder_id),
+                                                  fields=fields)
+        while request is not None:
+            response = request.execute()
+
+            for folder in response['files']:
+                if not folder['trashed']:
+                    folder.pop('trashed')
+                    yield folder
+
+            request = self.drive_service.files().list_next(request, response)
 
     def list_all(self, **kwargs):
         result = []

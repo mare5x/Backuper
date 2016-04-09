@@ -265,6 +265,12 @@ class Backup:
         for folder_path in self.get_folders_to_sync(path):
             self.dir_to_drive(folder_path)
 
+    def download_new_files(self):
+        pass
+        # list all new files from last download_date
+        # if change.drive_id not in archive -> download it to archive(parent_folder_of(change.drive_id)).path
+        # (get parent folder id of new file recursively until we hit one that's in the database)
+
     def write_last_backup_date(self):
         self.config['GoogleDrive']['last_backup_date'] = datetime.datetime.utcnow().isoformat('T') + 'Z'
         self.config.write_to_config()
@@ -283,24 +289,22 @@ class Backup:
     def write_last_change_token(self, change_id):
         self.config['GoogleDrive']['last_change_token'] = str(change_id)
 
+    def get_ids_to_download(self):
+        pass
+
     def get_drive_last_removed(self, update_last_change_token=True):
         changes = self.google.get_changes(start_page_token=self.get_last_change_token(),
                                  fields="changes(removed,time,fileId,file(name,modifiedTime,trashed))")
 
-        # result = []
         for change in changes:
             if change['removed'] or change.get('file', {}).get('trashed'):
-                # result.append(change['fileId'])
                 yield change['fileId']
 
         if update_last_change_token:
             self.write_last_change_token(self.google.get_start_page_token())
 
-        # return result
-
     def blacklist_removed_from_gdrive(self, log=False):
         for removed_file_id in self.get_drive_last_removed():
-        # removed_from_drive = self.get_drive_last_removed()
             try:
                 archive = DriveArchive.select().where(DriveArchive.drive_id == removed_file_id).get()
             except DriveArchive.DoesNotExist:
@@ -312,10 +316,6 @@ class Backup:
                     dynamic_print("Added {} to blacklist".format(archive.path), True)
 
                 archive.delete_instance()
-
-            # for archive in DriveArchive.select().where(DriveArchive.drive_id << removed_from_drive):
-
-        # return DriveArchive.delete().where(DriveArchive.drive_id << removed_from_drive).execute()
 
     def del_removed_from_local(self, progress=True):
         # paths_to_delete = []  # list of drive_ids
@@ -348,6 +348,7 @@ class Backup:
                     pbar.update()
 
                 future_to_archive[future].delete_instance()
+                del future_to_archive[future]  # no need to store it
 
     def write_log_structure(self, save_to=".", path=".", dirs_only=False):
         file_name = r"{}\{}".format(save_to, name_from_path(path, ".txt"))
@@ -386,6 +387,7 @@ class Backup:
                     if not os.path.exists(archive.path) or unify_path(archive.path) not in self.blacklisted:
                         logging.info("Removed {} from database.".format(archive.path))
                         archive.delete_instance()
+                del futures[future]
 
     def update_google_drive_metadata(self):
         """
@@ -403,6 +405,7 @@ class Backup:
 
             for _ in concurrent.futures.as_completed(futures):
                 pbar.update()
+                del futures[future]
 
 
 # TODO: uploading show file being uploaded on same line (\r) and progress for whole process not just for individual files
