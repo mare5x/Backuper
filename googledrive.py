@@ -8,6 +8,7 @@ from oauth2client.tools import run_flow
 from oauth2client import tools
 
 import os
+import re
 import json
 import time
 import logging
@@ -67,7 +68,6 @@ class GoogleDrive:
     UPLOAD_CHUNK_SIZE = 4 * 1024 ** 2
     DOWNLOAD_CHUNK_SIZE = 4 * 1024 ** 2
     BATCH_LIMIT = 5
-    QPS_LIMIT = 10  # 10 queries per second
     CREDENTIALS_FILE = 'credentials.json'
     CLIENT_SECRET_FILE = 'client_secret.json'
 
@@ -107,29 +107,49 @@ class GoogleDrive:
                 elapsed=format_seconds(time.time() - time_started),
                 left=format_seconds(time_left)), log=False, fit=True)
 
-    def download_folder_builder(self, folder_id, save_path, folder_name=None):
+    def walk_folder(self, folder_id, fields=None, q=None):
+        if fields:
+            files_in_folder = self.get_files_in_folder(folder_id, fields=fields, q=q)
+            folders_in_folder = self.get_folders_in_folder(folder_id, fields=fields, q=q)
+        else:
+            files_in_folder = self.get_files_in_folder(folder_id, q=q)
+            folders_in_folder = self.get_folders_in_folder(folder_id, q=q)
+
+        yield folder_id
+
+        for file in files_in_folder:
+            yield file
+
+        for folder in folders_in_folder:
+            yield from self.walk_folder(folder['id'], fields=fields)
+
+    def download_folder_builder(self, folder_id, save_path, folder_name=None, fields="files(id, name)"):
         """
         Recursively yield download_file function arguments for a folder and all its content.
         Args:
             folder_id: folder id
             save_path: str to a directory
             folder_name: join folder_name to save_path if given, otherwise fetch folder name from Google Drive
+            fields: str (default=files(id, name))
         Yields:
-            (file_id, save_path, filename) -> args for download_file
+            (type, download_root_path, response): type is #file or #folder
+                if type is #folder, response is the folder_id     (file_id, save_path, filename) -> args for download_file
         """
         if folder_name is None:
             folder_name = self.get_id_name(folder_id)
             if not folder_name:
                 return
 
+        fields = self.add_to_fields(fields, "files(id,name)")
         download_root_path = os.path.abspath(os.path.join(save_path, folder_name))
-        os.makedirs(download_root_path, exist_ok=True)
 
-        for file in self.get_files_in_folder(folder_id):
-            yield file['id'], download_root_path, file['name']
+        for file in self.get_files_in_folder(folder_id, fields=fields):
+            yield "#file", download_root_path, file  # file['id'], download_root_path, file['name']
+        
+        yield "#folder", download_root_path, folder_id
 
         for folder in self.get_folders_in_folder(folder_id):
-            yield from self.download_folder_builder(folder['id'], download_root_path, folder_name=folder['name'])
+            yield from self.download_folder_builder(folder['id'], download_root_path, folder_name=folder['name'], fields=fields)
 
     def download_folder(self, folder_id, save_path, folder_name=None):
         """
@@ -140,13 +160,19 @@ class GoogleDrive:
             save_path: str to a directory
             folder_name: join folder_name to save_path if given, otherwise fetch folder name from Google Drive
         """
-        for file_id, download_root_path, filename in self.download_folder_builder(folder_id, save_path, folder_name=folder_name):
-            self.download_file(file_id, download_root_path, filename)
+        for mime_type, download_root_path, response in self.download_folder_builder(folder_id, save_path, folder_name=folder_name):
+            if mime_type == "#folder":
+                os.makedirs(download_root_path, exist_ok=True)
+            else:
+                self.download_file(response['id'], download_root_path, response['name'])
 
     def threaded_download_folder(self, folder_id, save_path, folder_name=None):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            for args in self.download_folder_builder(folder_id, save_path, folder_name=folder_name):
-                executor.submit(retry_operation, self.download_file, *args)
+            for mime_type, download_root_path, response in self.download_folder_builder(folder_id, save_path, folder_name=folder_name):
+                if mime_type == "#folder":
+                    os.makedirs(download_root_path, exist_ok=True)
+                else:
+                    executor.submit(retry_operation, self.download_file, response['id'], download_root_path, response['name'])
 
     def download_file(self, file_id, save_path, filename=None):
         """
@@ -160,7 +186,6 @@ class GoogleDrive:
             if successful: str, download path
             else: None
         """
-
         if filename is None:
             filename = self.get_id_name(file_id)
             if not filename:
@@ -268,18 +293,16 @@ class GoogleDrive:
     def get_file_data_by_name(self, name):
         return self.drive_service.files().list(q="name='{}'".format(name), fields='files').execute()['files']
 
-    def get_files_in_folder(self, folder_id, fields="files(trashed, id, name)"):
+    def get_files_in_folder(self, folder_id, fields="files(trashed, id, name)", q=None):
         """
         Yields all (non-trashed) files in a folder (direct children) with fields metadata. Doesn't include folders.
-        Note:
-            MUST include files(trashed) in fields argument.
         """
-        if 'nextPageToken' not in fields:
-            fields += ',nextPageToken'
+        fields = self.add_to_fields(fields, 'files(trashed,id),nextPageToken')
+        search_query = "mimeType!='application/vnd.google-apps.folder' and '{folder_id}' in parents".format(folder_id=folder_id)
+        if q:
+            search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
 
-        request = self.drive_service.files().list(q="mimeType!='application/vnd.google-apps.folder' "
-                                                    "and '{folder_id}' in parents".format(folder_id=folder_id),
-                                                  fields=fields)
+        request = self.drive_service.files().list(q=search_query, fields=fields)
         while request is not None:
             response = request.execute()
 
@@ -290,18 +313,16 @@ class GoogleDrive:
 
             request = self.drive_service.files().list_next(request, response)
 
-    def get_folders_in_folder(self, folder_id, fields="files(trashed, id, name)"):
+    def get_folders_in_folder(self, folder_id, fields="files(trashed, id, name)", q=None):
         """
         Yields all (non-trashed) folders in a folder (direct children) with fields metadata.
-        Note:
-            MUST include files(trashed) in fields argument.
         """
-        if 'nextPageToken' not in fields:
-            fields += ',nextPageToken'
+        fields = self.add_to_fields(fields, 'files(trashed,id),nextPageToken')
+        search_query = "mimeType='application/vnd.google-apps.folder' and '{folder_id}' in parents".format(folder_id=folder_id)
+        if q:
+            search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
 
-        request = self.drive_service.files().list(q="mimeType='application/vnd.google-apps.folder' "
-                                                    "and '{folder_id}' in parents".format(folder_id=folder_id),
-                                                  fields=fields)
+        request = self.drive_service.files().list(q=search_query, fields=fields)
         while request is not None:
             response = request.execute()
 
@@ -311,6 +332,37 @@ class GoogleDrive:
                     yield folder
 
             request = self.drive_service.files().list_next(request, response)
+
+    def add_to_fields(self, original_fields, add_fields):
+        if original_fields:
+            orig_fields = re.split(',(?![^\(\)]*\))', original_fields)
+            add_fields = re.split(',(?![^\(\)]*\))', add_fields)
+
+            for field in add_fields:
+                if field in orig_fields:
+                    continue
+
+                match = re.match("(.*\()(.*)(\).*)", field)
+                if match:
+                    old_field = [orig_field for orig_field in orig_fields if match.group(1) in orig_field]
+                    if old_field:
+                        old_field = old_field.pop()
+                        old_field_match = re.match("(.*\()(.*)(\).*)", old_field)
+                        inner_old_fields = [f.strip() for f in old_field_match.group(2).split(',')]
+                        inner_new_fields = [f.strip() for f in match.group(2).split(',')]
+                        for inner_new_field in inner_new_fields:
+                            if inner_new_field and inner_new_field not in inner_old_fields:
+                                inner_old_fields.append(inner_new_field)
+
+                        field = "{left}{inner}{right}".format(left=old_field_match.group(1),
+                                                              inner=",".join(inner_old_fields),
+                                                              right=old_field_match.group(3)).strip(',')
+                        orig_fields.remove(old_field)
+
+                orig_fields.append(field)
+
+            return ",".join(orig_fields).strip(',')
+        return add_fields
 
     def list_all(self, **kwargs):
         result = []
@@ -353,7 +405,7 @@ class GoogleDrive:
         return int(self.drive_service.changes().getStartPageToken().execute()["startPageToken"])
 
     # @handle_http_error(suppress=True)
-    def get_changes(self, start_page_token=None, fields=None):
+    def get_changes(self, start_page_token=None, fields=None, include_removed=True):
         """
         yield response of all changes since start_page_token
         """
@@ -366,7 +418,7 @@ class GoogleDrive:
             if "newStartPageToken" not in fields:
                 fields = "newStartPageToken," + fields
 
-        param = {'fields': fields, 'restrictToMyDrive': True, 'pageSize': 100, 'pageToken': start_page_token}
+        param = {'fields': fields, 'restrictToMyDrive': True, 'pageSize': 100, 'pageToken': start_page_token, 'includeRemoved': include_removed}
 
         while page_token is not None:
             if page_token:

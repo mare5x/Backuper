@@ -3,6 +3,7 @@ import time
 import shutil
 import glob
 import configparser
+import hashlib
 
 from pytools.fileutils import *
 
@@ -39,7 +40,9 @@ class Config(configparser.ConfigParser):
             'redirect_uri': '',
             'folder_id': '',
             'last_backup_date': '',
-            'last_change_token': ''
+            'last_change_token': '',
+            'last_download_change_token': '',
+            'last_download_sync_time': ''
         }
 
     def get_section_values(self, section, sep=";"):
@@ -133,3 +136,20 @@ def real_case_filename(path):
     return path
 
 
+def md5sum(path):
+    """
+    Generate a md5sum for the given path based on the file contents.
+    Args:
+        path: str, path to a file
+    Returns:
+        str, md5 checksum
+        None -> cannot generate md5 checksum
+    Note:
+        md5 is exploitable!
+    """
+    if os.path.isfile(path):
+        hash_md5 = hashlib.md5()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b''):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
