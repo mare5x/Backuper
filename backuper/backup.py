@@ -68,28 +68,6 @@ def db_create_or_update(model, **kwargs):
         db_update(model, **kwargs)
 
 
-def backup(dropbox=False, google_drive=True, backup_sync=True, blacklist=True, delete_deleted=False, log_structures=False, log=True, download_sync=True):
-    with Backup(google=google_drive, my_dropbox=dropbox, log=log) as bkup:
-        paths = bkup.read_paths_to_backup()
-
-        if blacklist:
-            bkup.blacklist_removed_from_gdrive(log=True)
-
-        if delete_deleted:
-            bkup.del_removed_from_local(progress=True)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            if log_structures:
-                executor.submit(upload_log_structures, bkup)
-
-            if backup_sync or download_sync:
-                executor.submit(google_drive_sync, bkup, backup_sync, download_sync, paths['dirs_to_archive'])
-            #if backup_sync:
-            #    executor.submit(backup_sync_to_gdrive, bkup, paths['dirs_to_archive'])
-
-        print("\nDONE")
-
-
 def upload_log_structures(bkup, clean=True):
     paths = bkup.read_paths_to_backup()
     with bkup.temp_dir(clean=clean) as temp_dir_path:
@@ -102,7 +80,6 @@ def upload_log_structures(bkup, clean=True):
 
 
 def google_drive_sync(bkup, backup_sync, download_sync, paths=None):
-    # TODO decide between download sync type (walk folder or check changes)
     if paths is None:
         paths = bkup.read_paths_to_backup()['dirs_to_archive']
 
@@ -114,12 +91,13 @@ def google_drive_sync(bkup, backup_sync, download_sync, paths=None):
                 futures[executor.submit(bkup.to_google_drive, path)] = path
             elif download_sync:
                 executor.submit(bkup.download_sync_path, path)
-        
+
         for future in concurrent.futures.as_completed(futures):
             if download_sync:
                 executor.submit(bkup.download_sync_path, futures[future])
-            
+
             del futures[future]
+
 
 def backup_sync_to_gdrive(bkup, paths=None):
     if paths is None:
@@ -135,7 +113,7 @@ def backup_sync_to_gdrive(bkup, paths=None):
 
 
 class Backup:
-    def __init__(self, save_to_path=".", my_dropbox=False, google=True, log=False):
+    def __init__(self, my_dropbox=False, google=True, log=False):
         self.config = Config()
         self.my_dropbox = Dropbox(overwrite=True) if my_dropbox else None
         self.google = GoogleDrive() if google else None
@@ -296,11 +274,11 @@ class Backup:
         if model:
             if model.path in self.blacklisted:
                 return 0
-            
+
             cur_md5sum = md5sum(model.path)
             if cur_md5sum == md5checksum:
                 return 0
-                
+
             if model.md5sum != md5checksum:  # backup sync is behind
                 if model.md5sum == cur_md5sum:  # local file is the same as archived (file in cloud is ahead)
                     return 1
@@ -310,27 +288,28 @@ class Backup:
 
     def get_changes_to_download(self):
         """
-        Returns: (int, str: file id)
-            0: int, folder
+        Returns: (int: sync decision, str: file id, str: name, str: md5Checksum)
+            2: int, folder
             1: int, safe sync
             -1: int, conflict
         """
-        # use google.list with q=modifiedTime to find changes
         changes = self.google.get_changes(start_page_token=self.get_last_download_change_token(),
-                                          fields="changes(file(id, name, mimeType, md5Checksum))",
+                                          fields="changes(file(id, name, mimeType, md5Checksum, modifiedTime))",
                                           include_removed=False)
         for change in changes:
-            if change['file']['mimeType'] == 'application/vnd.google-apps.folder':
-                yield 0, change['file']['id']
-            else:
-                decision = self.is_for_download(change['file']['id'], change['md5Checksum'])
-                yield decision, change['file']['id']
+            if self.convert_time_to_datetime(change['modifiedTime']) > self.get_last_download_sync_time(raw=False):
+                if change['file']['mimeType'] == 'application/vnd.google-apps.folder':
+                    yield 2, change['file']['id'], change['file']['name'], ''
+                else:
+                    decision = self.is_for_download(change['file']['id'], change.get('md5Checksum', ''))
+                    if decision != 0:
+                        yield decision, change['file']['id'], change['file']['name'], change.get('md5Checksum', '')
 
         self.write_last_download_change_token(self.google.get_start_page_token())
 
     def download_sync_folder(self, folder_id, save_path, overwrite=False, q=None):
         """Sync (download) a Google Drive folder to local drive.
-        
+
         Positional arguments:
             folder_id: str, Google Drive id of folder
             save_path: str, the root directory of where to download
@@ -341,26 +320,26 @@ class Backup:
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
             futures = {}
             folder_name = real_case_filename(save_path)
-            for mime_type, download_root_path, response in self.google.walk_folder_builder(folder_id, parent_dir(save_path), 
-                                                                                           folder_name=folder_name, 
+            for file_kind, download_root_path, response in self.google.walk_folder_builder(folder_id, parent_dir(save_path),
+                                                                                           folder_name=folder_name,
                                                                                            fields="files(id, md5Checksum, name)",
                                                                                            q=q):
                 download_root_path = unify_path(download_root_path)
-                if mime_type == "#folder":
+                if file_kind == "#folder":
                     os.makedirs(download_root_path, exist_ok=True)
-                    db_create_or_update(DriveArchive, path=download_root_path, drive_id=response, 
+                    db_create_or_update(DriveArchive, path=download_root_path, drive_id=response,
                                         date_modified_on_disk=date_modified(download_root_path), md5sum='')
                     continue
-                    
+
                 sync_decision = self.is_for_download(response['id'], response['md5Checksum'])
                 if sync_decision != 0:  # a file
                     download_path = os.path.join(download_root_path, response['name'])
                     if sync_decision == -1:  # conflict
                         if not overwrite:
                             download_path = create_filename(download_path)
-                    
-                    futures[executor.submit(retry_operation, self.google.download_file, 
-                                                             response['id'], *os.path.split(download_path))] = response['id']  # split download_path into dirname and basename
+
+                    futures[executor.submit(retry_operation, self.google.download_file,
+                                                             response['id'], *os.path.split(download_path))] = response['id'], response['md5Checksum']  # split download_path into dirname and basename
 
             with tqdm(total=len(futures)) as pbar:
                 for future in concurrent.futures.as_completed(futures):
@@ -368,40 +347,74 @@ class Backup:
                     download_path = future.result()
                     if download_path:
                         logging.info("downloaded: {}".format(download_path))
-                        db_create_or_update(DriveArchive, path=unify_path(download_path), drive_id=futures[future],
-                                            date_modified_on_disk=date_modified(download_path), md5sum=md5sum(download_path))
+                        db_create_or_update(DriveArchive, path=unify_path(download_path), drive_id=futures[future][0],
+                                            date_modified_on_disk=date_modified(download_path), md5sum=futures[future][1])
                     del futures[future]  # free RAM
 
-    def download_sync_folder_changes(self, folder_id):
-        pass
-        # list all new files from last download_date
-        # if change.drive_id not in archive -> download it to archive(parent_folder_of(change.drive_id)).path
-        # (get parent folder id of new file recursively until we hit one that's in the database)
+    def download_sync_changes(self, overwrite=False):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+            futures = {}
+            for sync_decision, file_id, name, md5 in self.get_changes_to_download():
+                parent_archive = None
+                for parent_id in self.google.get_parents(file_id):
+                    parent_archive = db_get(DriveArchive, DriveArchive.drive_id, parent_id)
+                    if parent_archive:
+                        break
+
+                if parent_archive:
+                    download_root_path = parent_archive.path
+                else:
+                    download_root_path = self.config['Paths']['default_download_path']
+
+                download_path = os.path.join(download_root_path, name)
+
+                if sync_decision == 2:
+                    os.makedirs(download_path, exist_ok=True)
+                    db_create_or_update(DriveArchive, path=download_path, drive_id=file_id,
+                                        date_modified_on_disk=date_modified(download_path), md5sum='')
+                    continue
+
+                if sync_decision == -1:
+                    if not overwrite:
+                        download_path = create_filename(download_path)
+
+                futures[executor.submit(retry_operation, self.google.download_file,
+                                        file_id, *os.path.split(download_path))] = file_id, md5  # split download_path into dirname and basename
+
+            with tqdm(total=len(futures)) as pbar:
+                for future in concurrent.futures.as_completed(futures):
+                    pbar.update()
+                    download_path = future.result()
+                    if download_path:
+                        logging.info("downloaded: {}".format(download_path))
+                        db_create_or_update(DriveArchive, path=unify_path(download_path), drive_id=futures[future][0],
+                                            date_modified_on_disk=date_modified(download_path), md5sum=futures[future][1])
+                    del futures[future]  # free RAM
 
         # for download only folder make new config dir
 
     def download_sync_path(self, path):
         """Downloads all new or modified files from an already existing backup sync location (arg: path)."""
-        
+
         path = unify_path(path)
         model = db_get(DriveArchive, DriveArchive.path, path)
         if model:  # exists
             print("\rStarting download sync for: {} ...".format(path))
-            
+
             if not self.config['GoogleDrive']['last_download_sync_time']:  # first sync -> check all
                 self.download_sync_folder(model.drive_id, path, overwrite=False)
             else:
                 # don't do this!!! (for highly nested folders)
-                self.download_sync_folder(model.drive_id, path, overwrite=False, 
+                self.download_sync_folder(model.drive_id, path, overwrite=False,
                                           q="modifiedTime > '{last_sync_time}'".format(
                                                               last_sync_time=self.get_last_download_sync_time()))
-                                                              
+
             self.write_last_download_sync_time()
         else:
             logging.error("download_sync({}) model doesn't exist".format(path))
 
     def make_folder_structure(self, path):
-        logging.log("Making folder structure in Google Drive for {} ...".format(path))
+        #logging.log("Making folder structure in Google Drive for {} ...".format(path))
         for folder_path in self.get_folders_to_sync(path):
             self.dir_to_drive(folder_path)
 
@@ -501,7 +514,9 @@ class Backup:
                 if progress:
                     pbar.update()
 
-                future_to_archive[future].delete_instance()
+                archive = future_to_archive[future]
+                logging.log("Removed {} ({}) from Google Drive.".format(archive.drive_id, archive.path))
+                archive.delete_instance()
                 del future_to_archive[future]  # no need to store it
 
     def write_log_structure(self, save_to=".", path=".", dirs_only=False):
@@ -544,7 +559,7 @@ class Backup:
 
     def update_google_drive_metadata(self):
         """Change file names in Google Drive to their original local file system counterparts (for Windows)."""
-        
+
         print("Updating file names in Google Drive to their original local system counterparts ...")
         logging.info("update_google_drive_metadata()")
 

@@ -1,2 +1,11 @@
 __pycache__/
 .vscode
+backupervenv/
+Logs/
+*.egg-info
+*.db
+*.sublime*
+*.json
+*.ini
+*.idea
+*.gitignore

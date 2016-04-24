@@ -24,7 +24,8 @@ class Config(configparser.ConfigParser):
             'paths_to_backup': '',
             'dir_only_paths': '',
             'dirs_to_archive': '',
-            'blacklisted': ''
+            'blacklisted': '',
+            'default_download_path': ''
         }
 
         self['Dropbox'] = {
@@ -150,6 +151,6 @@ def md5sum(path):
     if os.path.isfile(path):
         hash_md5 = hashlib.md5()
         with open(path, 'rb') as f:
-            for chunk in iter(lambda: f.read(4096), b''):
+            for chunk in iter(lambda: f.read(8192), b''):
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()

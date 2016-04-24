@@ -115,7 +115,7 @@ class GoogleDrive:
             fields: str, fields to yield
             q:      str, query to be used when listing folder contents
         Yields:
-            (str, dict): mime_type, response object
+            (str, dict): file_kind, response object
         """
         if fields:
             files_in_folder = self.get_files_in_folder(folder_id, fields=fields, q=q)
@@ -145,9 +145,9 @@ class GoogleDrive:
             fields: str, fields to use when requesting the Google Drive API (default 'files(id, name)')
             q: str, query to be used when requesting the Google Drive API (default None)
         Yields:
-            (str, str, dict): mime_type, download_root_path, response object
-                mime_type is either #folder or #file
-                if mime_type is #folder, response is the folder_id
+            (str, str, dict): file_kind, download_root_path, response object
+                file_kind is either #folder or #file
+                if file_kind is #folder, response is the folder_id
         """
         if folder_name is None:
             folder_name = self.get_id_name(folder_id)
@@ -173,16 +173,16 @@ class GoogleDrive:
             save_path: str to a directory
             folder_name: join folder_name to save_path if given, otherwise fetch folder name from Google Drive
         """
-        for mime_type, download_root_path, response in self.walk_folder_builder(folder_id, save_path, folder_name=folder_name):
-            if mime_type == "#folder":
+        for file_kind, download_root_path, response in self.walk_folder_builder(folder_id, save_path, folder_name=folder_name):
+            if file_kind == "#folder":
                 os.makedirs(download_root_path, exist_ok=True)
             else:
                 self.download_file(response['id'], download_root_path, response['name'])
 
     def threaded_download_folder(self, folder_id, save_path, folder_name=None):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            for mime_type, download_root_path, response in self.walk_folder_builder(folder_id, save_path, folder_name=folder_name):
-                if mime_type == "#folder":
+            for file_kind, download_root_path, response in self.walk_folder_builder(folder_id, save_path, folder_name=folder_name):
+                if file_kind == "#folder":
                     os.makedirs(download_root_path, exist_ok=True)
                 else:
                     executor.submit(retry_operation, self.download_file, response['id'], download_root_path, response['name'])
@@ -342,6 +342,16 @@ class GoogleDrive:
                     yield folder
 
             request = self.drive_service.files().list_next(request, response)
+            
+    def get_parents(self, file_id):
+        parent_id = file_id
+        while parent_id:
+            yield parent_id
+            parent_id = self.get_metadata(parent_id, fields='id, parents')
+            if parent_id and 'parents' in parent_id:
+                parent_id = parent_id['parents'][0]
+            else:
+                parent_id = None
 
     def add_to_fields(self, original_fields, add_fields):
         if original_fields:
