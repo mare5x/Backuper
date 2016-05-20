@@ -56,10 +56,10 @@ def db_create(model, *args, **kwargs):
         return model.create(*args, **kwargs)
 
 
-def db_update(model, **kwargs):
+def db_update(model_instance, **kwargs):
     for key, value in kwargs.items():
-        setattr(model, key, value)
-    return model.save()
+        setattr(model_instance, key, value)
+    return model_instance.save()
 
 
 def db_create_or_update(model, **kwargs):
@@ -72,16 +72,16 @@ def upload_log_structures(bkup, clean=True):
     paths = bkup.read_paths_to_backup()
     with bkup.temp_dir(clean=clean) as temp_dir_path:
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            for path in paths['paths_to_backup']:
+            for path in paths['log_paths_full']:
                 executor.submit(bkup.write_log_structure, save_to=temp_dir_path, path=path)
 
-            for path in paths['dir_only_paths']:
+            for path in paths['log_dirs_only']:
                 executor.submit(bkup.write_log_structure, save_to=temp_dir_path, path=path, dirs_only=True)
 
 
 def google_drive_sync(bkup, backup_sync, download_sync, paths=None):
     if paths is None:
-        paths = bkup.read_paths_to_backup()['dirs_to_archive']
+        paths = bkup.read_paths_to_backup()['sync_dirs']
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
         # first backup sync a path and once that is done download sync it
@@ -101,7 +101,7 @@ def google_drive_sync(bkup, backup_sync, download_sync, paths=None):
 
 def backup_sync_to_gdrive(bkup, paths=None):
     if paths is None:
-        paths = bkup.read_paths_to_backup()['dirs_to_archive']
+        paths = bkup.read_paths_to_backup()['sync_dirs']
 
     if MAX_THREADS <= 1:
         for path in paths:
@@ -132,7 +132,7 @@ class Backup:
             console = logging.StreamHandler()
             formatter = logging.Formatter(u"%(message)s")
             console.setFormatter(formatter)
-            logging.getLogger('structurebackup').addHandler(console)
+            logging.getLogger('backuper').addHandler(console)
 
         db.connect()
         db.create_tables([DriveArchive, DropboxArchive], True)
@@ -270,6 +270,7 @@ class Backup:
         Note:
             Manually check if the file_id points to a folder.
         """
+        # TODO check time modified?
         model = db_get(DriveArchive, DriveArchive.drive_id, file_id)
         if model:
             if model.path in self.blacklisted:
@@ -414,7 +415,7 @@ class Backup:
             logging.error("download_sync({}) model doesn't exist".format(path))
 
     def make_folder_structure(self, path):
-        #logging.log("Making folder structure in Google Drive for {} ...".format(path))
+        #logging.info("Making folder structure in Google Drive for {} ...".format(path))
         for folder_path in self.get_folders_to_sync(path):
             self.dir_to_drive(folder_path)
 
@@ -472,10 +473,7 @@ class Backup:
 
     def blacklist_removed_from_gdrive(self, log=False):
         for removed_file_id in self.get_drive_last_removed():
-            try:
-                archive = DriveArchive.select().where(DriveArchive.drive_id == removed_file_id).get()
-            except DriveArchive.DoesNotExist:
-                archive = None
+            archive = db_get(DriveArchive, DriveArchive.drive_id, removed_file_id, None)
 
             if archive:
                 if os.path.exists(archive.path):
@@ -515,7 +513,7 @@ class Backup:
                     pbar.update()
 
                 archive = future_to_archive[future]
-                logging.log("Removed {} ({}) from Google Drive.".format(archive.drive_id, archive.path))
+                logging.info("Removed {} ({}) from database and/or Google Drive.".format(archive.drive_id, archive.path))
                 archive.delete_instance()
                 del future_to_archive[future]  # no need to store it
 
@@ -532,6 +530,30 @@ class Backup:
             self.google.upload(path_to_zip, folder_id=self.get_logs_folder_id())
             if clean:
                 remove_file(path_to_zip)
+                
+    def rename_database_path(self, old_path, new_path):
+        """Replace all database paths that contain old_path to contain new_path.
+        
+        Use it when moving a folder to a different location on your drive.
+        """
+        print("Replacing {} database entries to {} ...".format(old_path, new_path))
+        logging.info("rename_databse_path({}, {})".format(old_path, new_path))
+        
+        old_path = unify_path(old_path)
+        new_path = unify_path(new_path)
+        
+        q = DriveArchive.select().where(DriveArchive.path.startswith(old_path))
+        with tqdm(total=q.count()) as pbar:
+            for archive in q.naive().iterator():
+                db_update(archive, path=archive.path.replace(old_path, new_path, 1))
+                pbar.update()
+    
+    def clean_database(self):
+        """Remove every locally non-existent file from the database.
+        
+        Use with caution.
+        """
+        pass
 
     def rebuild_database(self):
         """Rebuild database by removing non-existent files in Google Drive.

@@ -32,35 +32,37 @@ def main():
 
     with backuper.Backup(google=args.googledrive, my_dropbox=args.dropbox, log=args.log) as bkup:
         paths = bkup.read_paths_to_backup()
-
-        if args.blacklist:
-            bkup.blacklist_removed_from_gdrive(log=True)
-
+        
         if args.deletedeleted:
             bkup.del_removed_from_local(progress=True)
-
+            
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            change_checker_futures = []
+            if args.blacklist:
+                change_checker_futures.append(executor.submit(bkup.blacklist_removed_from_gdrive, log=True))
+                
+            if args.downloadchanges:
+                change_checker_futures.append(executor.submit(bkup.download_sync_changes, overwrite=args.overwrite))
+            
+            concurrent.futures.wait(change_checker_futures)
+            del change_checker_futures
+
             if args.logstructures:
                 executor.submit(backuper.upload_log_structures, bkup)
 
             if args.backupsync or args.downloadsync:
-                executor.submit(backuper.google_drive_sync, bkup, args.backupsync, args.downloadsync, paths['dirs_to_archive'])
-            
-            if args.downloadchanges:
-                executor.submit(bkup.download_sync_changes, args.overwrite)
+                executor.submit(backuper.google_drive_sync, bkup, args.backupsync, args.downloadsync, paths['sync_dirs'])
 
         print("\nDONE")
-
-
-    # backuper.backup(dropbox=args.dropbox, google_drive=args.googledrive, backup_sync=args.backupsync, 
-    #                 blacklist=args.blacklist, delete_deleted=args.deletedeleted, 
-    #                 log_structures=args.logstructures, log=args.log, download_sync=args.downloadsync,
-    #                 download_changes=args.downloadchanges, overwrite=args.overwrite)
 
 
 if __name__ == "__main__":
     main()
 
+
+# Sync Google Photos folder in Google Drive (download it)
+
+# 403 doesn't retry!!!!!!!!!!!!!!!
 
 # split Backup class to Backuper, Downloader (or something ...)
 # use changes for download sync checking (or multithreaded walk folder?)
@@ -70,7 +72,6 @@ if __name__ == "__main__":
 # settings sync folders (key: value) -> drive_id: save_path 
 
 # uploading based on md5?
-
 
 # migrate useful sharedtools to pytools
 # downloading large files with partial download ?
@@ -85,21 +86,18 @@ if __name__ == "__main__":
 
 # high ram usage
 
-
 # ERROR HANDLING
 # 403 when uploading
 
 # ADD WILDCARDS TO BLACKLIST (glob.glob)
 # better blacklisting / whitelisting
 
-# download files added to drive to pc
 
 # add better command line progress display
 # use tqdm
 
 # ONLY UPDATE DB INFORMATION IF FILE SUCCESSFULLY UPLOADED etc. ....
 
-# !!!!!!!!!!!!!!! not all files are being uploaded
 
 # DONE:
 # migrate to new drive api (v3)
@@ -115,3 +113,5 @@ if __name__ == "__main__":
 
 # UPLOAD FILES WITH ORIGINAL FILE NAME (NOT unify_path())
 # FILES FOR SYNC INCORRECT
+# download files added to drive to pc
+# !!!!!!!!!!!!!!! not all files are being uploaded

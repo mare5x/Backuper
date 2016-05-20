@@ -15,7 +15,7 @@ import logging
 import datetime
 import mimetypes
 import concurrent.futures
-from contextlib import ContextDecorator
+from functools import wraps
 
 from .sharedtools import *
 
@@ -24,29 +24,69 @@ NUM_RETRIES = 6
 RETRYABLE_HTTP_ERROR_CODES = (403, 500)
 
 
-class handle_http_error(ContextDecorator):
-    def __init__(self, silent=False, suppress=False):
-        self._suppress = suppress
-        self._silent = silent
+def handle_http_error(silent=False, ignore=False):
+    """Decorator that handles HttpErrors by retrying the decorated function.
+    
+    Keyword arguments:
+        silent: don't raise error if all retries fail (default False)
+        ignore: upon HttpError, ignore it without retrying (default False)
+    Returns:
+        on success: return what the decorated functions returns
+        on HttpError: return None if ignore=True or silent=True
+    """
+    def decorated(func):
+        @wraps(func)
+        def inner_decorated(*args, **kwargs):
+            error = None
+            for attempt in range(1, NUM_RETRIES + 1):
+                try:
+                    return func(*args, **kwargs)
+                except HttpError as e:
+                    error = e
+                    if ignore or e.resp.status == 404:
+                        logging.info("Ignoring error {}".format(e))
+                        return
+                    
+                    if e.resp.status in RETRYABLE_HTTP_ERROR_CODES:
+                            sleeptime = 2 ** attempt
+                            dynamic_print('Waiting for {} s before retry {}'.format(sleeptime, attempt))
+                            time.sleep(sleeptime)
+                logging.info("Retrying {func}({args}) due to error {error}".format(func=func.__name__, 
+                                                                                   args=(args, kwargs), 
+                                                                                   error=e))
+            if silent:
+                logging.error("Silenced error {}".format(error))
+                return
+            else:
+                raise error
+                
+        return inner_decorated
+    return decorated
+    
+    
+# class handle_http_error(ContextDecorator):
+#     def __init__(self, silent=False, ignore=False):
+#         self._suppress = suppress
+#         self._silent = silent
 
-    def __enter__(self):
-        pass
+#     def __enter__(self):
+#         pass
 
-    def __exit__(self, exctype, excinst, exctb):
-        if exctype is HttpError:
-            logging.error(str(excinst))
+#     def __exit__(self, exctype, excinst, exctb):
+#         if exctype is HttpError:
+#             logging.error(str(excinst))
 
-            if self._suppress:
-                return True
+#             if self._suppress:
+#                 return True
 
-            if excinst.resp.status == 404:  # error 404 -> ignore (file is missing etc ...)
-                return True
+#             if excinst.resp.status == 404:  # error 404 -> ignore (file is missing etc ...)
+#                 return True
 
-            if excinst.resp.status in RETRYABLE_HTTP_ERROR_CODES:
-                for retry in range(NUM_RETRIES):
-                    if handle_progressless_attempt(error, retry, retries=NUM_RETRIES):
-                        if self._silent:
-                            return True
+#             if excinst.resp.status in RETRYABLE_HTTP_ERROR_CODES:
+#                 for retry in range(NUM_RETRIES):
+#                     if handle_progressless_attempt(error, retry, retries=NUM_RETRIES):
+#                         if self._silent:
+#                             return True
 
 
 _batch_error_counter = 0
@@ -91,11 +131,10 @@ class GoogleDrive:
 
     def print_progress_bar(self, status, time_started, type_bit):
         """
-        Args:
+        Positional arguments:
             status: MediaDownloadProgress or MediaUploadProgress
             time_started: time.time()
             type_bit: if type_bit == 1 then output 'downloaded', if type_bit == 0 then output 'uploaded'
-
         Returns:
             None (prints to stdout using '\r')
         """
@@ -246,10 +285,10 @@ class GoogleDrive:
         time_started = time.time()
         response = None
         while response is None:
-            with handle_http_error(silent=True, suppress=False):
-                progress, response = request.next_chunk(num_retries=5)
-                if progress:
-                    self.print_progress_bar(progress, time_started, 0)
+            #with handle_http_error(silent=True, ignore=False):
+            progress, response = request.next_chunk(num_retries=5)
+            if progress:
+                self.print_progress_bar(progress, time_started, 0)
 
         return response
 
@@ -274,7 +313,7 @@ class GoogleDrive:
             for _file in files:
                 self.upload_file(os.path.join(root, _file), folder_id=dir_id)
 
-    @handle_http_error(suppress=True)
+    @handle_http_error(ignore=False)
     def create_folder(self, name, parent_id='root'):
         body = {
             'name': name,
@@ -289,10 +328,11 @@ class GoogleDrive:
         if date:
             return datetime.datetime.strptime(date, '%Y-%m-%dT%H:%M:%S')
 
-    @handle_http_error(suppress=True)
+    @handle_http_error(ignore=False)
     def get_metadata(self, file_id, fields=None):
         return self.drive_service.files().get(fileId=file_id, fields=fields).execute()
 
+    @handle_http_error(ignore=False)
     def update_metadata(self, file_id, fields=None, **kwargs):
         if kwargs:
             return self.drive_service.files().update(fileId=file_id, body=kwargs, fields=fields).execute()
@@ -302,6 +342,7 @@ class GoogleDrive:
         if filename:
             return filename['name']
 
+    @handle_http_error(ignore=False)
     def get_file_data_by_name(self, name):
         return self.drive_service.files().list(q="name='{}'".format(name), fields='files').execute()['files']
 
@@ -409,7 +450,7 @@ class GoogleDrive:
         if requests_in_batch > 0:
             _batch.execute()
 
-    @handle_http_error(suppress=False)
+    @handle_http_error(ignore=False)
     def delete(self, file_id):
         self.drive_service.files().delete(fileId=file_id).execute()
 
@@ -420,11 +461,11 @@ class GoogleDrive:
                 return True
         return False
 
-    # @handle_http_error()
+    @handle_http_error(ignore=False)
     def get_start_page_token(self):
         return int(self.drive_service.changes().getStartPageToken().execute()["startPageToken"])
 
-    # @handle_http_error(suppress=True)
+    # @handle_http_error(ignore=True)
     def get_changes(self, start_page_token=None, fields=None, include_removed=True):
         """
         yield response of all changes since start_page_token

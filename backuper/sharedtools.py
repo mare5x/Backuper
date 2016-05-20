@@ -21,9 +21,9 @@ class Config(configparser.ConfigParser):
 
     def make_layout(self):
         self['Paths'] = {
-            'paths_to_backup': '',
-            'dir_only_paths': '',
-            'dirs_to_archive': '',
+            'log_paths_full': '',
+            'log_dirs_only': '',
+            'sync_dirs': '',
             'blacklisted': '',
             'default_download_path': ''
         }
