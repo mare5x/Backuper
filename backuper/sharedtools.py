@@ -1,9 +1,9 @@
 import logging
 import time
 import shutil
-import glob
 import configparser
 import hashlib
+import glob
 
 from pytools.fileutils import *
 
@@ -26,6 +26,10 @@ class Config(configparser.ConfigParser):
             'sync_dirs': '',
             'blacklisted': '',
             'default_download_path': ''
+        }
+
+        self['Settings'] = {
+            'blacklisted_extensions': ''
         }
 
         self['Dropbox'] = {
@@ -122,6 +126,15 @@ def handle_progressless_attempt(error, progressless_attempt, suppress=True, retr
 
 def unify_path(path):
     return os.path.normcase(os.path.abspath(path))
+
+
+def unify_ext(ext):
+    return os.path.normcase(ext)
+
+
+def get_ext(path):
+    """ Careful! works only with single extensions. (.db not .VC.db etc.) """
+    return unify_ext(os.path.splitext(path)[1])
 
 
 def real_case_filename(path):

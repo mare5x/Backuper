@@ -122,7 +122,7 @@ class GoogleDrive:
             flags = tools.argparser.parse_args(args=[])
             self.credentials = run_flow(flow, credential_storage, flags)
 
-        self.drive_service = build('drive', 'v3', requestBuilder=self._build_request)
+        self.drive_service = build('drive', 'v3', credentials=self.credentials, requestBuilder=self._build_request)
 
     def _build_request(self, _http, *args, **kwargs):
         # Create a new Http() object for every request

@@ -118,6 +118,7 @@ class Backup:
         self.my_dropbox = Dropbox(overwrite=True) if my_dropbox else None
         self.google = GoogleDrive() if google else None
 
+        self.blacklisted_extensions = [unify_ext(ext) for ext in self.config.get_section_values(self.config['Settings']['blacklisted_extensions'])]
         self.blacklisted = [unify_path(path) for path in self.config.get_section_values(self.config['Paths']['blacklisted'])]
 
         if log:
@@ -223,6 +224,10 @@ class Backup:
 
     def is_for_sync(self, path):
         entry = unify_path(path)
+
+        if os.path.isfile(path) and get_ext(path) in self.blacklisted_extensions:
+            return False
+
         try:
             stored_modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
             # folder already exists in google drive
@@ -537,7 +542,7 @@ class Backup:
         Use it when moving a folder to a different location on your drive.
         """
         print("Replacing {} database entries to {} ...".format(old_path, new_path))
-        logging.info("rename_databse_path({}, {})".format(old_path, new_path))
+        logging.info("rename_database_path({}, {})".format(old_path, new_path))
         
         old_path = unify_path(old_path)
         new_path = unify_path(new_path)
