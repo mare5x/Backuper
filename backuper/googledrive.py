@@ -337,6 +337,16 @@ class GoogleDrive:
         if kwargs:
             return self.drive_service.files().update(fileId=file_id, body=kwargs, fields=fields).execute()
 
+    @handle_http_error(ignore=False)
+    def move_file(self, src_id, dest_id):
+        """ Move src_id to be a child of dest_id. """
+        data = self.get_metadata(src_id, fields="parents")
+        parents = ",".join(data.get("parents"))
+        self.drive_service.files().update(fileId=src_id, fields="id, parents", addParents=dest_id, removeParents=parents).execute()
+
+    def rename_file(self, file_id, name):
+        self.update_metadata(file_id, name=name)
+
     def get_id_name(self, file_id):
         filename = self.get_metadata(file_id, fields="name")
         if filename:

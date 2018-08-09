@@ -30,9 +30,7 @@ def main():
 
     args = parser.parse_args()
 
-    with backuper.Backup(google=args.googledrive, my_dropbox=args.dropbox, log=args.log) as bkup:
-        paths = bkup.read_paths_to_backup()
-        
+    with backuper.Backup(google=args.googledrive, my_dropbox=args.dropbox, log=args.log) as bkup:        
         if args.deletedeleted:
             bkup.del_removed_from_local(progress=True)
             
@@ -51,7 +49,7 @@ def main():
                 executor.submit(backuper.upload_log_structures, bkup)
 
             if args.backupsync or args.downloadsync:
-                executor.submit(backuper.google_drive_sync, bkup, args.backupsync, args.downloadsync, paths['sync_dirs'])
+                executor.submit(backuper.google_drive_sync, bkup, args.backupsync, args.downloadsync, bkup.get_config_path("sync_dirs"))
 
         print("\nDONE")
 

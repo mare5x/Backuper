@@ -29,7 +29,12 @@ class Config(configparser.ConfigParser):
         }
 
         self['Settings'] = {
-            'blacklisted_extensions': ''
+            'blacklisted_extensions': '',
+            'blacklisted_names': ''
+        }
+
+        self['Backuper'] = {
+            'blacklisted_paths': ''  # automatically added
         }
 
         self['Dropbox'] = {
@@ -124,17 +129,17 @@ def handle_progressless_attempt(error, progressless_attempt, suppress=True, retr
     time.sleep(sleeptime)
 
 
+def unify_str(txt):
+    return os.path.normcase(txt)
+
+
 def unify_path(path):
     return os.path.normcase(os.path.abspath(path))
 
 
-def unify_ext(ext):
-    return os.path.normcase(ext)
-
-
 def get_ext(path):
     """ Careful! works only with single extensions. (.db not .VC.db etc.) """
-    return unify_ext(os.path.splitext(path)[1])
+    return unify_str(os.path.splitext(path)[1])
 
 
 def real_case_filename(path):
