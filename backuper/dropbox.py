@@ -32,12 +32,12 @@ class Dropbox:
         return self.get_latest_file_metadata()["rev"]
 
     def get_file_name(self):
-        return name_from_path(self.get_latest_file_metadata()['path'], raw=True)
+        return filetools.name_from_path(self.get_latest_file_metadata()['path'], raw=True)
 
     @uploading_to('Dropbox', dynamic=True)
     def upload_file(self, file_path, file_name=None):
         with open(file_path, "rb") as f:
-            file_size = getsize(file_path)
+            file_size = filetools.getsize(file_path)
             uploader = DropboxUploader(self.client, f, file_size)
 
             while True:
@@ -54,12 +54,12 @@ class Dropbox:
                 if file_name:
                     self.client.file_move(old_file, "{}".format(file_name))
                 else:
-                    self.client.file_move(old_file, name_from_path(file_path, raw=True))
+                    self.client.file_move(old_file, filetools.name_from_path(file_path, raw=True))
             else:
                 if file_name:
                     uploader.finish("{}".format(file_name))
                 else:
-                    uploader.finish(name_from_path(file_path, raw=True))
+                    uploader.finish(filetools.name_from_path(file_path, raw=True))
 
 
 class DropboxUploader(dropbox.client.ChunkedUploader):
@@ -73,8 +73,8 @@ class DropboxUploader(dropbox.client.ChunkedUploader):
         uploaded = (self.offset + 1) / self.target_length  # avoid 0 division error
         time_left = ((time.time() - self.time_started) / uploaded) - (time.time() - self.time_started)
         return "{:.2f}% uploaded [elapsed: {}, left: {}]".format(100 * uploaded,
-                                                                 format_seconds(time.time() - self.time_started),
-                                                                 format_seconds(time_left))
+                                                                 filetools.format_seconds(time.time() - self.time_started),
+                                                                 filetools.format_seconds(time_left))
 
     def upload_chunked(self, chunk_size=4 * 1024 * 1024):
         """Uploads data from this ChunkedUploader's file_obj in chunks, until

@@ -17,7 +17,9 @@ import mimetypes
 import concurrent.futures
 from functools import wraps
 
-from .sharedtools import *
+from .sharedtools import uploading_to
+from pytools import filetools as ft
+from pytools import printer
 
 
 NUM_RETRIES = 6
@@ -48,9 +50,9 @@ def handle_http_error(silent=False, ignore=False):
                         return
                     
                     if e.resp.status in RETRYABLE_HTTP_ERROR_CODES:
-                            sleeptime = 2 ** attempt
-                            dynamic_print('Waiting for {} s before retry {}'.format(sleeptime, attempt))
-                            time.sleep(sleeptime)
+                        sleeptime = 2 ** attempt
+                        dynamic_print('Waiting for {} s before retry {}'.format(sleeptime, attempt))
+                        time.sleep(sleeptime)
                 logging.info("Retrying {func}({args}) due to error {error}".format(func=func.__name__, 
                                                                                    args=(args, kwargs), 
                                                                                    error=e))
@@ -129,21 +131,23 @@ class GoogleDrive:
         http = self.credentials.authorize(httplib2.Http())
         return HttpRequest(http, *args, **kwargs)
 
-    def print_progress_bar(self, status, time_started, type_bit):
+    def print_progress_bar(self, block, progress, time_started, desc=""):
         """
         Positional arguments:
-            status: MediaDownloadProgress or MediaUploadProgress
+            block: pytools.printer.block object
+            progress: float in range [0, 1]
             time_started: time.time()
-            type_bit: if type_bit == 1 then output 'downloaded', if type_bit == 0 then output 'uploaded'
-        Returns:
-            None (prints to stdout using '\r')
+        Keyword arguments:
+            desc: prefix bar description.
         """
-        time_left = ((time.time() - time_started) / status.progress()) - (time.time() - time_started)
-        dynamic_print("{progress:.2f}% {status_type} [elapsed: {elapsed}, left: {left}]".format(
-                progress=status.progress() * 100,
-                status_type="downloaded" if type_bit else "uploaded",
-                elapsed=format_seconds(time.time() - time_started),
-                left=format_seconds(time_left)), log=False, fit=True)
+        # Linear fit progress.
+        t0 = time.time() - time_started
+        time_left = ft.format_seconds((t0 / progress) - t0) if progress > 0 else "inf"
+        block.print("{desc} {progress:.2f}% [{elapsed} || {left}]".format(
+            desc=desc,
+            progress=progress * 100,
+            elapsed=ft.format_seconds(t0),
+            left=time_left))
 
     def walk_folder(self, folder_id, fields=None, q=None):
         """Recursively yield all content in folder_id.
@@ -218,14 +222,6 @@ class GoogleDrive:
             else:
                 self.download_file(response['id'], download_root_path, response['name'])
 
-    def threaded_download_folder(self, folder_id, save_path, folder_name=None):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            for file_kind, download_root_path, response in self.walk_folder_builder(folder_id, save_path, folder_name=folder_name):
-                if file_kind == "#folder":
-                    os.makedirs(download_root_path, exist_ok=True)
-                else:
-                    executor.submit(retry_operation, self.download_file, response['id'], download_root_path, response['name'])
-
     def download_file(self, file_id, save_path, filename=None):
         """Download a file.
 
@@ -248,14 +244,17 @@ class GoogleDrive:
         logging.info("Downloading {} to {}".format(file_id, download_path))
 
         request = self.drive_service.files().get_media(fileId=file_id)
-        with open(download_path, 'wb') as file:
-            downloader = MediaIoBaseDownload(file, request, chunksize=self.DOWNLOAD_CHUNK_SIZE)
+        with open(download_path, 'wb') as f:
+            downloader = MediaIoBaseDownload(f, request, chunksize=self.DOWNLOAD_CHUNK_SIZE)
 
+            b = printer.block()
             time_started = time.time()
             done = False
             while not done:
                 status, done = downloader.next_chunk(num_retries=NUM_RETRIES)
-                self.print_progress_bar(status, time_started, 1)
+                self.print_progress_bar(b, status.progress() if status else 1, time_started, 
+                    desc="DL {}".format(filename))
+            b.exit()
 
         return download_path
 
@@ -264,50 +263,54 @@ class GoogleDrive:
             return self.upload_directory(path, root_id=folder_id)
         return self.upload_file(path, folder_id=folder_id, file_id=file_id)
 
-    @uploading_to('Google Drive', dynamic=True)
     def upload_file(self, file_path, folder_id='root', file_id=None):
+        logging.info("Uploading file: {}".format(file_path))
+
         mime, encoding = mimetypes.guess_type(file_path)
         if mime is None:
             mime = 'application/octet-stream'
 
         body = {
-            'name': real_case_filename(file_path),
+            'name': ft.real_case_filename(file_path),
             'parents': [folder_id]
         }
 
-        if getsize(file_path):
+        if ft.getsize(file_path):
             media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.UPLOAD_CHUNK_SIZE, resumable=True)
         else:
             return self.drive_service.files().create(body=body).execute()
 
         request = self._determine_update_or_insert(body, media_body, file_id=file_id)
 
+        b = printer.block()
         time_started = time.time()
         response = None
         while response is None:
-            #with handle_http_error(silent=True, ignore=False):
-            progress, response = request.next_chunk(num_retries=5)
-            if progress:
-                self.print_progress_bar(progress, time_started, 0)
+            status, response = request.next_chunk(num_retries=5)
+            self.print_progress_bar(b, status.progress() if status else 1, time_started, 
+                desc="UL {}".format(body['name']))
+        b.exit()
 
         return response
 
     def _determine_update_or_insert(self, body, media_body, file_id=None):
+        # googleapiclient.http.HttpRequest object returned.
         if file_id:
             body.pop('parents')
             return self.drive_service.files().update(fileId=file_id, body=body, media_body=media_body)
         return self.drive_service.files().create(body=body, media_body=media_body)
 
-    @uploading_to('Google Drive', dynamic=True)
     def upload_directory(self, dir_path, root_id='root'):
+        logging.info("Uploading directory: {}".format(dir_path))
+
         archived_dirs = {}
-        for root, dirs, files in walk(dir_path):
-            parent_id = archived_dirs.get(parent_dir(root), root_id)
+        for root, dirs, files in os.walk(dir_path):
+            parent_id = archived_dirs.get(ft.parent_dir(root), root_id)
 
             try:
                 dir_id = archived_dirs[os.path.abspath(root)]
             except KeyError:
-                dir_id = self.create_folder(real_case_filename(root), parent_id=parent_id)
+                dir_id = self.create_folder(ft.real_case_filename(root), parent_id=parent_id)
                 archived_dirs[os.path.abspath(root)] = dir_id
 
             for _file in files:
@@ -339,7 +342,7 @@ class GoogleDrive:
 
     @handle_http_error(ignore=False)
     def move_file(self, src_id, dest_id):
-        """ Move src_id to be a child of dest_id. """
+        """Move src_id to be a child of dest_id."""
         data = self.get_metadata(src_id, fields="parents")
         parents = ",".join(data.get("parents"))
         self.drive_service.files().update(fileId=src_id, fields="id, parents", addParents=dest_id, removeParents=parents).execute()
@@ -357,7 +360,8 @@ class GoogleDrive:
         return self.drive_service.files().list(q="name='{}'".format(name), fields='files').execute()['files']
 
     def get_files_in_folder(self, folder_id, fields="files(trashed, id, name)", q=None):
-        """Yields all (non-trashed) files in a folder (direct children) with fields metadata. Doesn't include folders."""
+        """Yields all (non-trashed) files in a folder (direct children) with fields metadata. 
+        Doesn't include folders."""
         
         fields = self.add_to_fields(fields, 'files(trashed,id),nextPageToken')
         search_query = "mimeType!='application/vnd.google-apps.folder' and '{folder_id}' in parents".format(folder_id=folder_id)

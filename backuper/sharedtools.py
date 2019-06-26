@@ -4,9 +4,9 @@ import shutil
 import configparser
 import hashlib
 import glob
+import os
 
-from pytools.fileutils import *
-
+from pytools import filetools
 
 NUM_RETRIES = 6
 
@@ -15,7 +15,7 @@ class Config(configparser.ConfigParser):
     def __init__(self):
         super().__init__()
 
-        if not self.read('settings.ini'):
+        if not self.read('settings.ini', encoding="utf-8"):
             self.make_layout()
             self.write_to_config()
 
@@ -59,7 +59,7 @@ class Config(configparser.ConfigParser):
         return section.strip(sep).split(sep)
 
     def write_to_config(self):
-        with open('settings.ini', 'w') as configfile:
+        with open('settings.ini', 'w', encoding="utf-8") as configfile:
             self.write(configfile)
 
 
@@ -92,9 +92,9 @@ def uploading_to(loc, dynamic=False):
             logging.info(args[1])
             path = "\\".join(args[1].rsplit('\\', 2)[-2:])
             if dynamic:
-                dynamic_print("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc), True)
+                dynamic_print("Uploading {} ({}) to {}".format(path, filetools.get_file_size(*args[1:]), loc), True)
             else:
-                logging.info("Uploading {} ({}) to {}".format(path, get_file_size(*args[1:]), loc))
+                logging.info("Uploading {} ({}) to {}".format(path, filetools.get_file_size(*args[1:]), loc))
             return func(*args, **kwargs)
         return print_info
     return wrap
@@ -140,35 +140,3 @@ def unify_path(path):
 def get_ext(path):
     """ Careful! works only with single extensions. (.db not .VC.db etc.) """
     return unify_str(os.path.splitext(path)[1])
-
-
-def real_case_filename(path):
-    """
-    "c:/users/mare5/projects/backuper/logs/2016_apr_01.txt" -> 2016_Apr_01.txt
-    "c:/users/mare5/projects/backuper/logs" -> Logs
-    """
-    path = glob.escape(os.path.abspath(path))  # if file name has a ?, * or [
-    name = "{}[{}]".format(path[:-1], path[-1])
-    found_path = glob.glob(name)
-    if found_path:
-        return found_path[0].rsplit('\\', 1)[-1]
-    return path
-
-
-def md5sum(path):
-    """
-    Generate a md5sum for the given path based on the file contents.
-    Args:
-        path: str, path to a file
-    Returns:
-        str, md5 checksum
-        None -> cannot generate md5 checksum
-    Note:
-        md5 is exploitable!
-    """
-    if os.path.isfile(path):
-        hash_md5 = hashlib.md5()
-        with open(path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()

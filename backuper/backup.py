@@ -1,13 +1,13 @@
-#! python3
-
 import tempfile
 import logging
 import datetime
 import concurrent.futures
 from contextlib import contextmanager
 
-from pytools.fileutils import *
 from .sharedtools import *
+
+from pytools import filetools as ft
+
 from .dropbox import Dropbox
 from .googledrive import GoogleDrive
 
@@ -130,7 +130,7 @@ class Backup:
 
         if log:
             os.makedirs("./Logs/", exist_ok=True)
-            log_file = create_filename("./Logs/{}.txt".format(get_date(True)))
+            log_file = ft.create_filename("./Logs/{}.txt".format(ft.get_date(True)))
             self.blacklisted_paths.add(unify_path(log_file))
             logging.basicConfig(filename=log_file,
                                 filemode='w',
@@ -153,7 +153,7 @@ class Backup:
         self.config.write_to_config()
 
     def to_dropbox(self, path):
-        self.my_dropbox.upload_file(path, file_name="{}.zip".format(get_date(for_file=True)))
+        self.my_dropbox.upload_file(path, file_name="{}.zip".format(ft.get_date(for_file=True)))
 
     def to_google_drive(self, path):
         if self.is_blacklisted(path):
@@ -171,7 +171,7 @@ class Backup:
 
     def get_parent_folder_id(self, path):
         try:
-            return DriveArchive.get(DriveArchive.path == parent_dir(path)).drive_id
+            return DriveArchive.get(DriveArchive.path == ft.parent_dir(path)).drive_id
         except DriveArchive.DoesNotExist:
             return self.get_drive_root_folder_id()
 
@@ -186,8 +186,9 @@ class Backup:
         folder_id = self.get_stored_file_id(entry)
         if folder_id is None:
             parent_id = self.get_parent_folder_id(entry)
-            folder_id = self.google.create_folder(real_case_filename(entry), parent_id=parent_id)
-            db_create(DriveArchive, path=entry, drive_id=folder_id, date_modified_on_disk=date_modified(entry), md5sum='')
+            folder_id = self.google.create_folder(ft.real_case_filename(entry), parent_id=parent_id)
+            db_create(DriveArchive, path=entry, drive_id=folder_id, 
+                date_modified_on_disk=ft.date_modified(entry), md5sum='')
 
         return folder_id
 
@@ -198,7 +199,8 @@ class Backup:
         file_id = self.get_stored_file_id(entry)
 
         resp = self.google.upload_file(path, folder_id=folder_id, file_id=file_id)
-        db_create_or_update(DriveArchive, path=entry, drive_id=resp['id'], date_modified_on_disk=date_modified(entry), md5sum=md5sum(entry))
+        db_create_or_update(DriveArchive, path=entry, drive_id=resp['id'], 
+            date_modified_on_disk=ft.date_modified(entry), md5sum=ft.md5sum(entry))
 
         return resp['id']
 
@@ -246,7 +248,7 @@ class Backup:
             return False
         if self.contains_blacklisted_rules(path):
             return True
-        parent = parent_dir(path)
+        parent = ft.parent_dir(path)
         if parent == path:
             return False
         return self.contains_blacklisted_rules_parent(parent, stop)
@@ -265,7 +267,7 @@ class Backup:
             return False
         if self.is_blacklisted(path):
             return True
-        parent = parent_dir(path)
+        parent = ft.parent_dir(path)
         if parent == path:
             return False
         return self.is_blacklisted_parent(parent, stop)
@@ -276,12 +278,12 @@ class Backup:
         try:
             stored_modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
             # folder already exists in google drive
-            return date_modified(entry) > stored_modified_date if not os.path.isdir(entry) else False
+            return ft.date_modified(entry) > stored_modified_date if not os.path.isdir(entry) else False
         except DriveArchive.DoesNotExist:
             return True
 
     def get_all_paths_to_sync(self, path):
-        for root, dirs, files in walk(path):
+        for root, dirs, files in os.walk(path):
             if self.is_blacklisted(root):
                 dirs.clear()
                 continue
@@ -293,7 +295,7 @@ class Backup:
                     yield f_path
 
     def get_files_to_sync(self, path):
-        for root, dirs, files in walk(path):
+        for root, dirs, files in os.walk(path):
             if self.is_blacklisted(root):
                 dirs.clear()
                 continue
@@ -303,7 +305,7 @@ class Backup:
                     yield f_path
 
     def get_folders_to_sync(self, path):
-        for root, dirs, files in walk(path):
+        for root, dirs, files in os.walk(path):
             if self.is_blacklisted(root):
                 dirs.clear()
                 continue
@@ -326,7 +328,7 @@ class Backup:
             if self.is_blacklisted(model.path):
                 return 0
 
-            cur_md5sum = md5sum(model.path)
+            cur_md5sum = ft.md5sum(model.path)
             if cur_md5sum == md5checksum:
                 return 0
 
@@ -370,8 +372,8 @@ class Backup:
         """
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
             futures = {}
-            folder_name = real_case_filename(save_path)
-            for file_kind, download_root_path, response in self.google.walk_folder_builder(folder_id, parent_dir(save_path),
+            folder_name = ft.real_case_filename(save_path)
+            for file_kind, download_root_path, response in self.google.walk_folder_builder(folder_id, ft.parent_dir(save_path),
                                                                                            folder_name=folder_name,
                                                                                            fields="files(id, md5Checksum, name)",
                                                                                            q=q):
@@ -379,7 +381,7 @@ class Backup:
                 if file_kind == "#folder":
                     os.makedirs(download_root_path, exist_ok=True)
                     db_create_or_update(DriveArchive, path=download_root_path, drive_id=response,
-                                        date_modified_on_disk=date_modified(download_root_path), md5sum='')
+                                        date_modified_on_disk=ft.date_modified(download_root_path), md5sum='')
                     continue
 
                 sync_decision = self.is_for_download(response['id'], response['md5Checksum'])
@@ -387,7 +389,7 @@ class Backup:
                     download_path = os.path.join(download_root_path, response['name'])
                     if sync_decision == -1:  # conflict
                         if not overwrite:
-                            download_path = create_filename(download_path)
+                            download_path = ft.create_filename(download_path)
 
                     futures[executor.submit(retry_operation, self.google.download_file,
                                                              response['id'], *os.path.split(download_path))] = response['id'], response['md5Checksum']  # split download_path into dirname and basename
@@ -399,7 +401,7 @@ class Backup:
                     if download_path:
                         logging.info("downloaded: {}".format(download_path))
                         db_create_or_update(DriveArchive, path=unify_path(download_path), drive_id=futures[future][0],
-                                            date_modified_on_disk=date_modified(download_path), md5sum=futures[future][1])
+                                            date_modified_on_disk=ft.date_modified(download_path), md5sum=futures[future][1])
                     del futures[future]  # free RAM
 
     def download_sync_changes(self, overwrite=False):
@@ -422,12 +424,12 @@ class Backup:
                 if sync_decision == 2:
                     os.makedirs(download_path, exist_ok=True)
                     db_create_or_update(DriveArchive, path=download_path, drive_id=file_id,
-                                        date_modified_on_disk=date_modified(download_path), md5sum='')
+                                        date_modified_on_disk=ft.date_modified(download_path), md5sum='')
                     continue
 
                 if sync_decision == -1:
                     if not overwrite:
-                        download_path = create_filename(download_path)
+                        download_path = ft.create_filename(download_path)
 
                 futures[executor.submit(retry_operation, self.google.download_file,
                                         file_id, *os.path.split(download_path))] = file_id, md5  # split download_path into dirname and basename
@@ -439,7 +441,7 @@ class Backup:
                     if download_path:
                         logging.info("downloaded: {}".format(download_path))
                         db_create_or_update(DriveArchive, path=unify_path(download_path), drive_id=futures[future][0],
-                                            date_modified_on_disk=date_modified(download_path), md5sum=futures[future][1])
+                                            date_modified_on_disk=ft.date_modified(download_path), md5sum=futures[future][1])
                     del futures[future]  # free RAM
 
         # for download only folder make new config dir
@@ -561,18 +563,22 @@ class Backup:
                 del future_to_archive[future]  # no need to store it
 
     def write_log_structure(self, save_to=".", path=".", dirs_only=False):
-        file_name = r"{}\{}".format(save_to, name_from_path(path, ".txt"))
+        logging.info('Logging structure of {}'.format(path))
+
+        file_name = r"{}\{}_{}.txt".format(save_to, ft.get_date(for_file=True), ft.name_from_path(path))
         with open(file_name, "w", encoding="utf8") as f:
-            log_structure(path, dirs_only=dirs_only, output=f)
+            ft.tree(path, files=(not dirs_only), stream=f)
+        
+        logging.info('Finished logging {}'.format(path))
 
     @contextmanager
     def temp_dir(self, clean=True):
         with tempfile.TemporaryDirectory() as temp_dir:
             yield temp_dir
-            path_to_zip = zip_dir(temp_dir)
+            path_to_zip = ft.zip_dir(temp_dir)
             self.google.upload(path_to_zip, folder_id=self.get_logs_folder_id())
             if clean:
-                remove_file(path_to_zip)
+                ft.remove_file(path_to_zip)
 
     def blacklist_path(self, entry, log=False):
         if not os.path.exists(entry):
@@ -595,7 +601,7 @@ class Backup:
         """ Cleans the saved blacklisted_paths, so that only the most common valid paths remain. """
         new_blacklisted_paths = set()
         for entry in self.blacklisted_paths:
-            if os.path.exists(entry) and not self.is_blacklisted_parent(parent_dir(entry), self.config_sync_dirs):
+            if os.path.exists(entry) and not self.is_blacklisted_parent(ft.parent_dir(entry), self.config_sync_dirs):
                 new_blacklisted_paths.add(entry)
         self.blacklisted_paths = new_blacklisted_paths
         self.write_blacklisted_paths()
@@ -684,7 +690,7 @@ class Backup:
             futures = []
             for archive in DriveArchive.select().naive().iterator():
                 futures.append(executor.submit(retry_operation, self.google.update_metadata, archive.drive_id,
-                                               name=real_case_filename(archive.path), error=RETRYABLE_ERRORS))
+                                               name=ft.real_case_filename(archive.path), error=RETRYABLE_ERRORS))
 
             for _ in concurrent.futures.as_completed(futures):
                 pbar.update()
