@@ -127,16 +127,3 @@ def handle_progressless_attempt(error, progressless_attempt, suppress=True, retr
     # add tqdm
     dynamic_print('Waiting for {}s before retry {}'.format(sleeptime, progressless_attempt))
     time.sleep(sleeptime)
-
-
-def unify_str(txt):
-    return os.path.normcase(txt)
-
-
-def unify_path(path):
-    return os.path.normcase(os.path.abspath(path))
-
-
-def get_ext(path):
-    """ Careful! works only with single extensions. (.db not .VC.db etc.) """
-    return unify_str(os.path.splitext(path)[1])

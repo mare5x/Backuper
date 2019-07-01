@@ -106,6 +106,10 @@ def _batch_error_suppressor(request_id, response, exception):
         _batch_error_counter = 0
 
 
+def convert_time_to_datetime(google_time):
+    return datetime.datetime.strptime(google_time.rsplit('.', 1)[0], '%Y-%m-%dT%H:%M:%S')
+
+
 class GoogleDrive:
     UPLOAD_CHUNK_SIZE = 4 * 1024 ** 2
     DOWNLOAD_CHUNK_SIZE = 4 * 1024 ** 2

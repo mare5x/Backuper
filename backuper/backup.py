@@ -13,59 +13,11 @@ from .googledrive import GoogleDrive
 
 from apiclient.errors import ResumableUploadError, HttpError
 
-from peewee import *
-from peewee import OperationalError
-
 from tqdm import tqdm
 
 
 MAX_THREADS = 6
 RETRYABLE_ERRORS = (ResumableUploadError, HttpError)
-
-
-db = SqliteDatabase('archived.db')
-
-
-class BaseModel(Model):
-    path = TextField(unique=True)
-
-    class Meta:
-        database = db
-
-
-class DriveArchive(BaseModel):
-    drive_id = CharField(unique=True)
-    date_modified_on_disk = DateTimeField()
-    md5sum = CharField(null=True)
-
-
-class DropboxArchive(BaseModel):
-    dropbox_id = CharField(unique=True)
-    date_modified_on_disk = DateTimeField()
-
-
-def db_get(model, field, key, fallback=None):
-    try:
-        return model.get(field == key)
-    except model.DoesNotExist:
-        return fallback
-
-
-def db_create(model, *args, **kwargs):
-    with db.atomic():
-        return model.create(*args, **kwargs)
-
-
-def db_update(model_instance, **kwargs):
-    for key, value in kwargs.items():
-        setattr(model_instance, key, value)
-    return model_instance.save()
-
-
-def db_create_or_update(model, **kwargs):
-    model, created = model.create_or_get(**kwargs)
-    if not created:
-        db_update(model, **kwargs)
 
 
 def upload_log_structures(bkup, clean=True):
@@ -232,48 +184,8 @@ class Backup:
             self.config_sync_dirs = paths_set
         return paths_set
 
-    def contains_blacklisted_ext(self, basename):
-        for ext in self.blacklisted_extensions:
-            if basename.endswith(ext):
-                return True
-        return False
-
-    def contains_blacklisted_rules(self, path):
-        entry = unify_path(path)
-        basename = os.path.basename(entry)
-        return (basename in self.blacklisted_names) or (self.contains_blacklisted_ext(entry))
-
-    def contains_blacklisted_rules_parent(self, path, stop):
-        if path in stop:
-            return False
-        if self.contains_blacklisted_rules(path):
-            return True
-        parent = ft.parent_dir(path)
-        if parent == path:
-            return False
-        return self.contains_blacklisted_rules_parent(parent, stop)
-
-    def is_blacklisted(self, path):
-        entry = unify_path(path)
-        if entry in self.blacklisted_paths:
-            return True
-        return self.contains_blacklisted_rules(entry)
-
-    def is_blacklisted_parent(self, path, stop):
-        """ Check if path or parents of path up to stop are blacklisted. 
-            stop should be a list of paths or a string
-        """
-        if path in stop:
-            return False
-        if self.is_blacklisted(path):
-            return True
-        parent = ft.parent_dir(path)
-        if parent == path:
-            return False
-        return self.is_blacklisted_parent(parent, stop)
-
     def is_for_sync(self, path):
-        """ Note: make sure path is not blacklisted. """
+        """Note: make sure path is not blacklisted."""
         entry = unify_path(path)
         try:
             stored_modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
@@ -471,53 +383,10 @@ class Backup:
         for folder_path in self.get_folders_to_sync(path):
             self.dir_to_drive(folder_path)
 
-    def get_last_download_change_token(self):
-        if not self.config['GoogleDrive']['last_download_change_token']:
-            return self.google.get_start_page_token()
-        return int(self.config['GoogleDrive']['last_download_change_token'])
-
-    def write_last_download_change_token(self, change_id):
-        self.config['GoogleDrive']['last_download_change_token'] = str(change_id)
-
-    def write_last_download_sync_time(self, sync_time=None):
-        if sync_time:
-            self.config['GoogleDrive']['last_download_sync_time'] = sync_time
-        else:
-            self.config['GoogleDrive']['last_download_sync_time'] = datetime.datetime.utcnow().isoformat('T') + 'Z'
-        self.config.write_to_config()
-
-    def get_last_download_sync_time(self, raw=True):
-        if not raw:
-            return self.convert_time_to_datetime(self.config['GoogleDrive']['last_download_sync_time'])
-        return self.config['GoogleDrive']['last_download_sync_time']
-
-    def write_last_backup_date(self):
-        self.config['GoogleDrive']['last_backup_date'] = datetime.datetime.utcnow().isoformat('T') + 'Z'
-        self.config.write_to_config()
-
-    def get_last_backup_date(self, archive=False):
-        if archive:
-            return self.convert_time_to_datetime(self.config['GoogleDrive']['last_backup_date'])
-        return self.config['GoogleDrive']['last_backup_date']
-
-    def get_last_change_token(self):
-        if not self.config['GoogleDrive']['last_change_token']:
-            return self.google.get_start_page_token()
-        return int(self.config['GoogleDrive']['last_change_token'])
-
-    def write_last_change_token(self, change_id):
-        self.config['GoogleDrive']['last_change_token'] = str(change_id)
-
-    def write_blacklisted_paths(self):
-        self.config['Backuper']['blacklisted_paths'] = ";".join(self.blacklisted_paths)
-
-    def convert_time_to_datetime(self, google_time):
-        return datetime.datetime.strptime(google_time.rsplit('.', 1)[0], '%Y-%m-%dT%H:%M:%S')
-
     def get_drive_last_removed(self, update_last_change_token=True):
         changes = self.google.get_changes(start_page_token=self.get_last_change_token(),
-                                 fields="changes(removed,time,fileId,file(name,modifiedTime,trashed))",
-                                 include_removed=True)
+            fields="changes(removed,time,fileId,file(name,modifiedTime,trashed))",
+            include_removed=True)
 
         for change in changes:
             if change['removed'] or change.get('file', {}).get('trashed'):
@@ -563,13 +432,13 @@ class Backup:
                 del future_to_archive[future]  # no need to store it
 
     def write_log_structure(self, save_to=".", path=".", dirs_only=False):
-        logging.info('Logging structure of {}'.format(path))
+        logging.info('Logging structure of {}.'.format(path))
 
         file_name = r"{}\{}_{}.txt".format(save_to, ft.get_date(for_file=True), ft.name_from_path(path))
         with open(file_name, "w", encoding="utf8") as f:
             ft.tree(path, files=(not dirs_only), stream=f)
         
-        logging.info('Finished logging {}'.format(path))
+        logging.info('Finished logging {}.'.format(path))
 
     @contextmanager
     def temp_dir(self, clean=True):
@@ -580,15 +449,6 @@ class Backup:
             if clean:
                 ft.remove_file(path_to_zip)
 
-    def blacklist_path(self, entry, log=False):
-        if not os.path.exists(entry):
-            return
-        
-        if not self.is_blacklisted_parent(entry, self.config_sync_dirs):
-            self.blacklisted_paths.add(entry)
-            if log:
-                dynamic_print("Added {} to blacklist".format(archive.path), fit=True, log=log)
-     
     def blacklist_removed_from_gdrive(self, log=False):
         for removed_file_id in self.get_drive_last_removed():
             archive = db_get(DriveArchive, DriveArchive.drive_id, removed_file_id, None)
@@ -596,15 +456,6 @@ class Backup:
                 self.blacklist_path(archive.path, log)
                 archive.delete_instance()
         self.clean_blacklisted_paths()
-
-    def clean_blacklisted_paths(self):
-        """ Cleans the saved blacklisted_paths, so that only the most common valid paths remain. """
-        new_blacklisted_paths = set()
-        for entry in self.blacklisted_paths:
-            if os.path.exists(entry) and not self.is_blacklisted_parent(ft.parent_dir(entry), self.config_sync_dirs):
-                new_blacklisted_paths.add(entry)
-        self.blacklisted_paths = new_blacklisted_paths
-        self.write_blacklisted_paths()
 
     def remove_blacklisted_paths(self):
         """ Removes archived blacklisted paths from Google Drive and the archive. """
@@ -630,54 +481,6 @@ class Backup:
                 logging.info("Removed {} ({}) from database and/or Google Drive.".format(archive.drive_id, archive.path))
                 archive.delete_instance()
                 del future_to_archive[future]  # no need to store it
-
-    def rename_database_path(self, old_path, new_path):
-        """Replace all database paths that contain old_path to contain new_path.
-        
-        Use it when moving a folder to a different location on your drive.
-        """
-        print("Replacing {} database entries to {} ...".format(old_path, new_path))
-        logging.info("rename_database_path({}, {})".format(old_path, new_path))
-        
-        old_path = unify_path(old_path)
-        new_path = unify_path(new_path)
-        
-        q = DriveArchive.select().where(DriveArchive.path.startswith(old_path))
-        with tqdm(total=q.count()) as pbar:
-            for archive in q.naive().iterator():
-                db_update(archive, path=archive.path.replace(old_path, new_path, 1))
-                pbar.update()
-    
-    def clean_database(self):
-        """Remove every locally non-existent file from the database.
-        
-        Use with caution.
-        """
-        pass
-
-    def rebuild_database(self):
-        """Rebuild database by removing non-existent files in Google Drive from the database archive.
-
-        Used for maintenance.
-        """
-        print("Rebuilding database ...")
-        logging.info("rebuild_database()")
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor, \
-                        tqdm(total=DriveArchive.select().count()) as pbar:
-            futures = {}
-            for archive in DriveArchive.select().naive().iterator():
-                futures[executor.submit(retry_operation, self.google.exists, archive.drive_id, error=RETRYABLE_ERRORS)] = archive
-
-            for future in concurrent.futures.as_completed(futures):
-                pbar.update()
-
-                if not future.result():  # doesn't exist
-                    archive = futures[future]
-                    if not os.path.exists(archive.path) or self.is_blacklisted(archive.path):
-                        logging.info("Removed {} from database.".format(archive.path))
-                        archive.delete_instance()
-                del futures[future]
 
     def update_google_drive_metadata(self):
         """Change file names in Google Drive to their original local file system counterparts (for Windows)."""
