@@ -121,52 +121,6 @@ class Backup:
             retry_operation(self.file_to_drive, path, self.get_drive_root_folder_id(), error=RETRYABLE_ERRORS)
             self.write_last_backup_date()
 
-    def get_parent_folder_id(self, path):
-        try:
-            return DriveArchive.get(DriveArchive.path == ft.parent_dir(path)).drive_id
-        except DriveArchive.DoesNotExist:
-            return self.get_drive_root_folder_id()
-
-    def get_stored_file_id(self, path):
-        try:
-            return DriveArchive.get(DriveArchive.path == path).drive_id
-        except DriveArchive.DoesNotExist:
-            return None
-
-    def dir_to_drive(self, path):
-        entry = unify_path(path)
-        folder_id = self.get_stored_file_id(entry)
-        if folder_id is None:
-            parent_id = self.get_parent_folder_id(entry)
-            folder_id = self.google.create_folder(ft.real_case_filename(entry), parent_id=parent_id)
-            db_create(DriveArchive, path=entry, drive_id=folder_id, 
-                date_modified_on_disk=ft.date_modified(entry), md5sum='')
-
-        return folder_id
-
-    def file_to_drive(self, path, folder_id=None):
-        entry = unify_path(path)
-        if folder_id is None:
-            folder_id = self.get_parent_folder_id(entry)
-        file_id = self.get_stored_file_id(entry)
-
-        resp = self.google.upload_file(path, folder_id=folder_id, file_id=file_id)
-        db_create_or_update(DriveArchive, path=entry, drive_id=resp['id'], 
-            date_modified_on_disk=ft.date_modified(entry), md5sum=ft.md5sum(entry))
-
-        return resp['id']
-
-    def get_drive_root_folder_id(self):
-        try:
-            return self.config['GoogleDrive']['folder_id']
-        except KeyError:
-            if not self.google.get_file_data_by_name("Backuper"):
-                folder_id = self.google.create_folder("Backuper")
-            else:
-                folder_id = self.google.get_file_data_by_name("Backuper")[0]['id']
-            self.config['GoogleDrive']['folder_id'] = folder_id
-        return folder_id
-
     def get_logs_folder_id(self):
         try:
             return self.config['GoogleDrive']['logs_folder_id']
@@ -177,52 +131,6 @@ class Backup:
                 folder_id = self.google.create_folder("Structure logs", parent_id=self.get_drive_root_folder_id())
             self.config['GoogleDrive']['logs_folder_id'] = folder_id
         return folder_id
-
-    def get_config_path(self, section):
-        paths_set = { unify_path(path) for path in self.config.get_section_values(self.config['Paths'][section]) }
-        if section == "sync_dirs":
-            self.config_sync_dirs = paths_set
-        return paths_set
-
-    def is_for_sync(self, path):
-        """Note: make sure path is not blacklisted."""
-        entry = unify_path(path)
-        try:
-            stored_modified_date = DriveArchive.get(DriveArchive.path == entry).date_modified_on_disk
-            # folder already exists in google drive
-            return ft.date_modified(entry) > stored_modified_date if not os.path.isdir(entry) else False
-        except DriveArchive.DoesNotExist:
-            return True
-
-    def get_all_paths_to_sync(self, path):
-        for root, dirs, files in os.walk(path):
-            if self.is_blacklisted(root):
-                dirs.clear()
-                continue
-            if self.is_for_sync(root):
-                yield root
-            for f in files:
-                f_path = os.path.join(root, f)
-                if not self.is_blacklisted(f_path) and self.is_for_sync(f_path):
-                    yield f_path
-
-    def get_files_to_sync(self, path):
-        for root, dirs, files in os.walk(path):
-            if self.is_blacklisted(root):
-                dirs.clear()
-                continue
-            for f in files:
-                f_path = os.path.join(root, f)
-                if not self.is_blacklisted(f_path) and self.is_for_sync(f_path):
-                    yield f_path
-
-    def get_folders_to_sync(self, path):
-        for root, dirs, files in os.walk(path):
-            if self.is_blacklisted(root):
-                dirs.clear()
-                continue
-            if self.is_for_sync(root):
-                yield root
 
     def is_for_download(self, file_id, md5checksum):
         """Check if a file on Google Drive is to be downloaded.

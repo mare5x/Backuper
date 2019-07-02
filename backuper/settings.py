@@ -120,6 +120,12 @@ class DataFile(BaseFile):
     def set_blacklisted_paths(self, blacklisted_paths):
         self['Backuper']['blacklisted_paths'] = ";".join(blacklisted_paths)
 
+    def get_root_folder_id(self):
+        return self.get("GoogleDrive", "folder_id", fallback=None)
+
+    def set_root_folder_id(self, val):
+        self["GoogleDrive"]["folder_id"] = str(val)
+
 
 class Settings:
     def __init__(self):

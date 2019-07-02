@@ -9,8 +9,8 @@ def list_paths_contains(path):
     for archive in q.iterator():
         print(archive.path)
 
-db.db_init()
+drive_db = db.GoogleDriveDB()
 
 list_paths_contains("backuper")
 
-db.db_exit()
+drive_db.close()

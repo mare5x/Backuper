@@ -2,10 +2,15 @@ import os
 import logging
 import concurrent.futures
 
+from pytools import filetools as ft
+
 import peewee
 from tqdm import tqdm
 
-db = peewee.SqliteDatabase('archived.db')
+
+DB_FILE_PATH = "archived.db"
+db = peewee.SqliteDatabase(DB_FILE_PATH)
+
 
 class BaseModel(peewee.Model):
     path = peewee.TextField(unique=True)
@@ -18,34 +23,63 @@ class DriveArchive(BaseModel):
     drive_id = peewee.CharField(unique=True)
     date_modified_on_disk = peewee.DateTimeField()
     md5sum = peewee.CharField(null=True)
-    
 
-def db_get(model, field, key, fallback=None):
-    try:
-        return model.get(field == key)
-    except model.DoesNotExist:
+
+class GoogleDriveDB:
+    """Manages the archive (database) used for Google Drive."""
+
+    def __init__(self):
+        GoogleDriveDB.init()
+
+    @staticmethod
+    def init():
+        db.connect(reuse_if_open=True)
+        db.create_tables([DriveArchive], safe=True)
+
+    @staticmethod
+    def close():
+        db.close()
+
+    @staticmethod
+    def get(field, key, fallback=None):
+        query = getattr(DriveArchive, field) == key
+        try:
+            return DriveArchive.get(query)
+        except DriveArchive.DoesNotExist:
+            return fallback
+
+    @staticmethod
+    def create(*args, **kwargs):
+        with db.atomic():
+            return DriveArchive.create(*args, **kwargs)
+
+    @staticmethod
+    def remove(field, key):
+        inst = GoogleDriveDB.get(field, key)
+        if inst is not None:
+            inst.delete_instance()
+
+    @staticmethod
+    def update(**kwargs):
+        for key, value in kwargs.items():
+            setattr(DriveArchive, key, value)
+        return DriveArchive.save()
+
+    @staticmethod
+    def create_or_update(**kwargs):
+        model, created = DriveArchive.get_or_create(**kwargs)
+        if not created:
+            GoogleDriveDB.update(**kwargs)
+
+    @staticmethod
+    def get_parent_folder_id(path, fallback="root"):
+        return GoogleDriveDB.get_stored_path_id(ft.parent_dir(path), fallback=fallback)
+
+    @staticmethod
+    def get_stored_path_id(path, fallback=None):
+        val = GoogleDriveDB.get("path", path, fallback=None)
+        if val: return val.drive_id
         return fallback
-
-def db_create(model, *args, **kwargs):
-    with db.atomic():
-        return model.create(*args, **kwargs)
-
-def db_update(model_instance, **kwargs):
-    for key, value in kwargs.items():
-        setattr(model_instance, key, value)
-    return model_instance.save()
-
-def db_create_or_update(model, **kwargs):
-    model, created = model.get_or_create(**kwargs)
-    if not created:
-        db_update(model, **kwargs)
-
-def db_init():
-    db.connect()
-    db.create_tables([DriveArchive], safe=True)
-
-def db_exit():
-    db.close()
 
 
 def unify_path(path):

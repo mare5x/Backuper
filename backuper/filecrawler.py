@@ -12,7 +12,7 @@ class FileCrawler:
     def is_for_sync(self, path):
         """Note: make sure path is not blacklisted."""
         entry = db.unify_path(path)
-        archive = db.db_get(db.DriveArchive, db.DriveArchive.path, entry)
+        archive = db.GoogleDriveDB.get("path", entry)
         if archive is not None:
             # Folder already exists in google drive.
             return ft.date_modified(entry) > archive.date_modified_on_disk if not os.path.isdir(entry) else False

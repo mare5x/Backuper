@@ -2,7 +2,7 @@ from backuper import filecrawler
 from backuper import settings
 from backuper import database
 
-database.db_init()
+db = database.GoogleDriveDB()
 
 settings.SETTINGS_FILE = "tests/test_settings.ini"
 settings.DATA_FILE = "tests/test_backuper.ini"
@@ -20,4 +20,4 @@ for p in crawler.get_all_paths_to_sync("tests/"):
     print(p)
 
 conf.exit()
-database.db_exit()
+db.close()
