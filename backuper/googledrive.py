@@ -106,8 +106,11 @@ def _batch_error_suppressor(request_id, response, exception):
         _batch_error_counter = 0
 
 
-def convert_time_to_datetime(google_time):
+def convert_google_time_to_datetime(google_time):
     return datetime.datetime.strptime(google_time.rsplit('.', 1)[0], '%Y-%m-%dT%H:%M:%S')
+
+def convert_datetime_to_google_time(dtime):
+    return dtime.isoformat(sep='T', timespec="microseconds") + 'Z'
 
 
 class GoogleDrive:
@@ -116,6 +119,8 @@ class GoogleDrive:
     BATCH_LIMIT = 5
     CREDENTIALS_FILE = 'credentials.json'
     CLIENT_SECRET_FILE = 'client_secret.json'
+
+    FOLDER_MIMETYPE = 'application/vnd.google-apps.folder'
 
     def __init__(self):
         credential_storage = Storage(self.CREDENTIALS_FILE)
@@ -194,7 +199,7 @@ class GoogleDrive:
         Yields:
             (str, str, dict): file_kind, download_root_path, response object
                 file_kind is either #folder or #file
-                if file_kind is #folder, response is the folder_id
+                if file_kind is #folder, response is { 'id': folder_id }
         """
         if folder_name is None:
             folder_name = self.get_id_name(folder_id)
@@ -202,12 +207,12 @@ class GoogleDrive:
                 return
 
         fields = self.add_to_fields(fields, "files(id,name)")
-        download_root_path = os.path.abspath(os.path.join(save_path, folder_name))
+        download_root_path = os.path.join(save_path, folder_name)
 
         for file in self.get_files_in_folder(folder_id, fields=fields, q=q):
             yield "#file", download_root_path, file  # file['id'], download_root_path, file['name']
         
-        yield "#folder", download_root_path, folder_id
+        yield "#folder", download_root_path, { 'id': folder_id } 
 
         for folder in self.get_folders_in_folder(folder_id):  # no q, so we check all folders (modifiedTime of folders ...)
             yield from self.walk_folder_builder(folder['id'], download_root_path, folder_name=folder['name'], fields=fields, q=q)
@@ -262,47 +267,46 @@ class GoogleDrive:
 
         return download_path
 
-    def upload(self, path, folder_id='root', file_id=None):
+    def upload(self, path, folder_id='root', file_id=None, fields=None):
         if os.path.isdir(path):
             return self.upload_directory(path, root_id=folder_id)
-        return self.upload_file(path, folder_id=folder_id, file_id=file_id)
+        return self.upload_file(path, folder_id=folder_id, file_id=file_id, fields=fields)
 
-    def upload_file(self, file_path, folder_id='root', file_id=None):
+    def upload_file(self, file_path, folder_id='root', file_id=None, fields=None):
         logging.info("Uploading file: {}".format(file_path))
 
         mime, encoding = mimetypes.guess_type(file_path)
         if mime is None:
             mime = 'application/octet-stream'
-
+        
         body = {
             'name': ft.real_case_filename(file_path),
             'parents': [folder_id]
         }
 
-        if ft.getsize(file_path):
-            media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.UPLOAD_CHUNK_SIZE, resumable=True)
-        else:
-            return self.drive_service.files().create(body=body).execute()
-
-        request = self._determine_update_or_insert(body, media_body, file_id=file_id)
-
+        # Empty files can't be uploaded with chunks because they aren't resumable.
+        resumable = ft.getsize(file_path) > 0
+        media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.UPLOAD_CHUNK_SIZE, resumable=resumable)
+        request = self._determine_update_or_insert(body, media_body=media_body, file_id=file_id, fields=fields)
+        
         b = printer.block()
         time_started = time.time()
-        response = None
+        response = None if resumable else request.execute()  # Empty files are not chunked.
         while response is None:
             status, response = request.next_chunk(num_retries=5)
             self.print_progress_bar(b, status.progress() if status else 1, time_started, 
                 desc="UL {}".format(body['name']))
+        self.print_progress_bar(b, 1, time_started, desc="UL {}".format(body['name']))
         b.exit()
 
         return response
 
-    def _determine_update_or_insert(self, body, media_body, file_id=None):
+    def _determine_update_or_insert(self, body, media_body=None, file_id=None, **kwargs):
         # googleapiclient.http.HttpRequest object returned.
         if file_id:
-            body.pop('parents')
-            return self.drive_service.files().update(fileId=file_id, body=body, media_body=media_body)
-        return self.drive_service.files().create(body=body, media_body=media_body)
+            body.pop('parents')  # update requests can't have the parents attribute.
+            return self.drive_service.files().update(fileId=file_id, body=body, media_body=media_body, **kwargs)
+        return self.drive_service.files().create(body=body, media_body=media_body, **kwargs)
 
     def upload_directory(self, dir_path, root_id='root'):
         logging.info("Uploading directory: {}".format(dir_path))
@@ -319,13 +323,14 @@ class GoogleDrive:
 
             for _file in files:
                 self.upload_file(os.path.join(root, _file), folder_id=dir_id)
+        return archived_dirs[os.path.abspath(dir_path)]
 
     @handle_http_error(ignore=False)
     def create_folder(self, name, parent_id='root'):
         body = {
             'name': name,
             'parents': [parent_id],
-            'mimeType': 'application/vnd.google-apps.folder'
+            'mimeType': GoogleDrive.FOLDER_MIMETYPE
         }
 
         return self.drive_service.files().create(body=body).execute()['id']
@@ -368,7 +373,7 @@ class GoogleDrive:
         Doesn't include folders."""
         
         fields = self.add_to_fields(fields, 'files(trashed,id),nextPageToken')
-        search_query = "mimeType!='application/vnd.google-apps.folder' and '{folder_id}' in parents".format(folder_id=folder_id)
+        search_query = "mimeType!='{}' and '{folder_id}' in parents".format(GoogleDrive.FOLDER_MIMETYPE, folder_id=folder_id)
         if q:
             search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
 
@@ -387,7 +392,7 @@ class GoogleDrive:
         """Yields all (non-trashed) folders in a folder (direct children) with fields metadata."""
         
         fields = self.add_to_fields(fields, 'files(trashed,id),nextPageToken')
-        search_query = "mimeType='application/vnd.google-apps.folder' and '{folder_id}' in parents".format(folder_id=folder_id)
+        search_query = "mimeType='{}' and '{folder_id}' in parents".format(GoogleDrive.FOLDER_MIMETYPE, folder_id=folder_id)
         if q:
             search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
 
@@ -403,6 +408,7 @@ class GoogleDrive:
             request = self.drive_service.files().list_next(request, response)
             
     def get_parents(self, file_id):
+        """NOTE: files are assumed to have at most ONE parent!"""
         parent_id = file_id
         while parent_id:
             yield parent_id
@@ -411,6 +417,13 @@ class GoogleDrive:
                 parent_id = parent_id['parents'][0]
             else:
                 parent_id = None
+
+    def is_parent(self, folder_id, file_id):
+        """Whether folder_id is a not necessarily direct parent of file_id."""
+        for parent in self.get_parents(file_id):
+            if parent == folder_id:
+                return True
+        return False
 
     def add_to_fields(self, original_fields, add_fields):
         if original_fields:
@@ -485,9 +498,7 @@ class GoogleDrive:
 
     # @handle_http_error(ignore=True)
     def get_changes(self, start_page_token=None, fields=None, include_removed=True):
-        """
-        yield response of all changes since start_page_token
-        """
+        """Yield response of all changes since start_page_token."""
 
         page_token = start_page_token
 
