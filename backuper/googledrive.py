@@ -116,7 +116,7 @@ def convert_datetime_to_google_time(dtime):
 class GoogleDrive:
     UPLOAD_CHUNK_SIZE = 4 * 1024 ** 2
     DOWNLOAD_CHUNK_SIZE = 4 * 1024 ** 2
-    BATCH_LIMIT = 5
+    BATCH_LIMIT = 32
     CREDENTIALS_FILE = 'credentials.json'
     CLIENT_SECRET_FILE = 'client_secret.json'
 
@@ -158,64 +158,36 @@ class GoogleDrive:
             elapsed=ft.format_seconds(t0),
             left=time_left))
 
-    def walk_folder(self, folder_id, fields=None, q=None):
-        """Recursively yield all content in folder_id.
+    def walk_folder(self, folder_id, dirname=None, dirpath="", fields="files(id, name)", q=None):
+        """Recursively yield all content in folder_id (similar to os.walk). 
         
         Positional arguments:
             folder_id: str, Google Drive id of folder
         Keyword arguments:
-            fields: str, fields to yield
-            q:      str, query to be used when listing folder contents
-        Yields:
-            (str, dict): file_kind, response object
-        """
-        if fields:
-            files_in_folder = self.get_files_in_folder(folder_id, fields=fields, q=q)
-            folders_in_folder = self.get_folders_in_folder(folder_id, fields=fields, q=q)
-        else:
-            files_in_folder = self.get_files_in_folder(folder_id, q=q)
-            folders_in_folder = self.get_folders_in_folder(folder_id, q=q)
-
-        yield "#folder", folder_id
-
-        for file in files_in_folder:
-            yield "#file", file
-
-        for folder in folders_in_folder:
-            yield from self.walk_folder(folder['id'], fields=fields)
-
-    def walk_folder_builder(self, folder_id, save_path, folder_name=None, fields="files(id, name)", q=None):
-        """Recursively yield all content in folder_id.
-        
-        Use when building download paths.
-        
-        Positional arguments:
-            folder_id: str, Google Drive id of folder
-            save_path: str, the root directory of where to download
-        Keyword arguments:
-            folder_name: str, join folder_name to save_path if given, otherwise fetch folder name from Google Drive (default None)
+            dirname: str, name of folder_id
+            dirpath: str, path prefix (default "")
             fields: str, fields to use when requesting the Google Drive API (default 'files(id, name)')
-            q: str, query to be used when requesting the Google Drive API (default None)
+            q: str, query to be used when requesting the Google Drive API. ONLY for filenames. (default None)
         Yields:
-            (str, str, dict): file_kind, download_root_path, response object
-                file_kind is either #folder or #file
-                if file_kind is #folder, response is { 'id': folder_id }
+            a 3-tuple (dirpath, dirnames, filenames),
+            where dirnames and filenames are lists of metadata responses.
+            And dirpath is a 2-tuple (dirpath, folder_id).
         """
-        if folder_name is None:
-            folder_name = self.get_id_name(folder_id)
-            if not folder_name:
+        if dirname is None:
+            dirname = self.get_id_name(folder_id)
+            if not dirname:
                 return
 
         fields = self.add_to_fields(fields, "files(id,name)")
-        download_root_path = os.path.join(save_path, folder_name)
+        dirpath = os.path.join(dirpath, dirname)
 
-        for file in self.get_files_in_folder(folder_id, fields=fields, q=q):
-            yield "#file", download_root_path, file  # file['id'], download_root_path, file['name']
-        
-        yield "#folder", download_root_path, { 'id': folder_id } 
+        dirs = list(self.get_folders_in_folder(folder_id, fields=fields))
+        files = list(self.get_files_in_folder(folder_id, fields=fields, q=q))
 
-        for folder in self.get_folders_in_folder(folder_id):  # no q, so we check all folders (modifiedTime of folders ...)
-            yield from self.walk_folder_builder(folder['id'], download_root_path, folder_name=folder['name'], fields=fields, q=q)
+        yield (dirpath, folder_id), dirs, files
+
+        for dir_response in dirs:
+            yield from self.walk_folder(dir_response["id"], dirname=dir_response["name"], dirpath=dirpath, fields=fields, q=q)
 
     def download_folder(self, folder_id, save_path, folder_name=None):
         """Recursively download a folder and all its content.
@@ -468,18 +440,19 @@ class GoogleDrive:
         return result
 
     def batch_delete(self, ids):
-        _batch = self.drive_service.new_batch_http_request(callback=_batch_error_suppressor)
+        batch = self.drive_service.new_batch_http_request()
         requests_in_batch = 0
         for _id in ids:
             if requests_in_batch >= self.BATCH_LIMIT:
-                _batch.execute()
+                batch.execute()
+                batch = self.drive_service.new_batch_http_request()
                 requests_in_batch = 0
 
-            _batch.add(self.drive_service.files().delete(fileId=_id))
+            batch.add(self.drive_service.files().delete(fileId=_id))
             requests_in_batch += 1
 
         if requests_in_batch > 0:
-            _batch.execute()
+            batch.execute()
 
     @handle_http_error(ignore=False)
     def delete(self, file_id):

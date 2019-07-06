@@ -58,6 +58,10 @@ def test_list():
     for r in g.get_folders_in_folder('root'):
         print(r)
 
+def test_walk_folder(folder_id):
+    for dirpath, dirnames, filenames in g.walk_folder(folder_id, fields="files(id, md5Checksum, name)"):
+        print(dirpath, dirnames, filenames)
+
 if __name__ == "__main__":
     # test_progress_bar()
 
@@ -66,5 +70,6 @@ if __name__ == "__main__":
     # g.download_folder('0B94xod46LwqkZlVnN2I1VVNCemc', "tests/")
 
     # test_changes()
-    # test_file_upload()
-    test_list()
+    test_file_upload()
+    # test_list()
+    # test_walk_folder("0B94xod46LwqkSVIyTktCMVV1QWM")
