@@ -8,7 +8,7 @@ conf = settings.Settings()
 database.GoogleDriveDB.init()
 google = googledrive.GoogleDrive()
 drive_uploader = uploader.DriveUploader(conf, google)
-file_crawler = filecrawler.FileCrawler(conf)
+file_crawler = filecrawler.LocalFileCrawler(conf)
 
 
 def make_folder_structure(path):

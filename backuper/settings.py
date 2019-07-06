@@ -85,6 +85,8 @@ class DataFile(BaseFile):
             'last_download_sync_time': ''
         }
 
+        self.set_last_download_sync_time()
+
     def get_last_download_change_token(self):
         v = self["GoogleDrive"]["last_download_change_token"]
         return int(v) if v else -1
@@ -94,20 +96,21 @@ class DataFile(BaseFile):
 
     def set_last_download_sync_time(self, sync_time=None):
         if sync_time is None:
-            sync_time = datetime.datetime.utcnow().isoformat('T') + 'Z'
+            sync_time = googledrive.convert_datetime_to_google_time(datetime.datetime.utcnow())
         self['GoogleDrive']['last_download_sync_time'] = sync_time
 
-    def get_last_download_sync_time(self, raw=True):
+    def get_last_download_sync_time(self, raw):
+        raw_time = self['GoogleDrive']['last_download_sync_time']
         if not raw:
-            return googledrive.convert_time_to_datetime(self['GoogleDrive']['last_download_sync_time'])
-        return self['GoogleDrive']['last_download_sync_time']
+            return googledrive.convert_google_time_to_datetime(raw_time)
+        return raw_time
 
     def set_last_backup_date(self):
-        self['GoogleDrive']['last_backup_date'] = datetime.datetime.utcnow().isoformat('T') + 'Z'
+        self['GoogleDrive']['last_backup_date'] = googledrive.convert_datetime_to_google_time(datetime.datetime.utcnow())
 
     def get_last_backup_date(self, archive=False):
         if archive:
-            return googledrive.convert_time_to_datetime(self['GoogleDrive']['last_backup_date'])
+            return googledrive.convert_google_time_to_datetime(self['GoogleDrive']['last_backup_date'])
         return self['GoogleDrive']['last_backup_date']
 
     def get_last_change_token(self):

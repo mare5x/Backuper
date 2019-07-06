@@ -1,6 +1,6 @@
 import os
-import concurrent.futures
 import queue
+from concurrent.futures import ThreadPoolExecutor
 
 from pytools import filetools as ft
 
@@ -51,7 +51,7 @@ class DriveUploader:
             parent_id = self.get_parent_folder_id(entry)
             folder_id = self.google.create_folder(ft.real_case_filename(entry), parent_id=parent_id)
             db.GoogleDriveDB.create(path=entry, drive_id=folder_id, 
-                date_modified_on_disk=ft.date_modified(entry), md5sum='')
+                date_modified_on_disk=ft.date_modified(entry), md5sum=db.GoogleDriveDB.FOLDER_MD5)
         return folder_id
 
     def start_upload_queue(self, n_threads=5):
@@ -66,7 +66,7 @@ class DriveUploader:
         """
         q = UploadQueue()
         q.n_threads = n_threads  # A convenience attribute.
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=n_threads, thread_name_prefix="DriveUploader")
+        executor = ThreadPoolExecutor(max_workers=n_threads, thread_name_prefix="DriveUploader")
         for i in range(n_threads):
             executor.submit(self.upload_queue_worker, q)
         # The resources associated with the executor will be freed when all pending futures are done executing.

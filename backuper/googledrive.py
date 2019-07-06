@@ -454,7 +454,7 @@ class GoogleDrive:
         if requests_in_batch > 0:
             batch.execute()
 
-    @handle_http_error(ignore=False)
+    # @handle_http_error(ignore=False)
     def delete(self, file_id):
         self.drive_service.files().delete(fileId=file_id).execute()
 

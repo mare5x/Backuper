@@ -28,8 +28,16 @@ class DriveArchive(BaseModel):
 class GoogleDriveDB:
     """Manages the archive (database) used for Google Drive."""
 
+    FOLDER_MD5 = ""  # Shared md5 checksum for folders.
+
     def __init__(self):
         GoogleDriveDB.init()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        GoogleDriveDB.close()
 
     @staticmethod
     def init():
