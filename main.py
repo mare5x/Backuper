@@ -1,57 +1,15 @@
-import backuper
-import concurrent.futures
+from backuper import backuper
 import argparse
-import os.path
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-g", "--googledrive", action="store_false",
-                        default=True, help="DISABLE sync with Google Drive")
-    parser.add_argument("-d", "--dropbox", action="store_true",
-                        default=False, help="sync with Dropbox")
-    parser.add_argument("-b", "--backupsync", action="store_false",
-                        default=True, help="DON'T backup sync paths")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("-s", "--downloadsync", action="store_true",
-                        default=False, help="download sync paths")
-    group.add_argument("-c", "--downloadchanges", action="store_false",
-                        default=True, help="DON'T download changes made")
-    parser.add_argument("--blacklist", action="store_false",
-                        default=True, help="DON'T blacklist files removed from cloud storage")
-    parser.add_argument("--deletedeleted", action="store_true",
-                        default=False, help="delete files removed from disk from cloud storage")
-    parser.add_argument("--logstructures", action="store_false",
-                        default=True, help="DON'T make a structure log of paths")
-    parser.add_argument("-l", "--log", action="store_false",
-                        default=True, help="DON'T make a log file")
-    parser.add_argument("-w", "--overwrite", action="store_true",
-                        default=False, help="overwrite existing files when downloading")
-
+    parser.add_argument("-lsu", action="store_true", help="List changes that will get uploaded.")
     args = parser.parse_args()
-
-    with backuper.Backup(google=args.googledrive, my_dropbox=args.dropbox, log=args.log) as bkup:        
-        if args.deletedeleted:
-            bkup.del_removed_from_local(progress=True)
-            
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            change_checker_futures = []
-            if args.blacklist:
-                change_checker_futures.append(executor.submit(bkup.blacklist_removed_from_gdrive, log=True))
-                
-            if args.downloadchanges:
-                change_checker_futures.append(executor.submit(bkup.download_sync_changes, overwrite=args.overwrite))
-            
-            concurrent.futures.wait(change_checker_futures)
-            del change_checker_futures
-
-            if args.logstructures:
-                executor.submit(backuper.upload_log_structures, bkup)
-
-            if args.backupsync or args.downloadsync:
-                executor.submit(backuper.google_drive_sync, bkup, args.backupsync, args.downloadsync, bkup.get_config_path("sync_dirs"))
-
-        print("\nDONE")
+    
+    b = backuper.Backuper()
+    if args.lsu:
+        b.list_upload_changes()
 
 
 if __name__ == "__main__":

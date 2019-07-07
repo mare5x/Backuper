@@ -1,8 +1,8 @@
 from backuper import database as db
 
 def list_all():
-    with db.GoogleDriveDB() as db:
-        for archive in db:
+    with db.GoogleDriveDB() as gddb:
+        for archive in gddb:
             print(archive.path)
 
 def list_paths_contains(path):
