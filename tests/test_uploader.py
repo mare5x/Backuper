@@ -1,10 +1,9 @@
 from backuper import uploader, settings, database, googledrive, filecrawler
 
-settings.SETTINGS_FILE = "tests/test_settings.ini"
-settings.DATA_FILE = "tests/test_backuper.ini"
+SETTINGS_FILE = "tests/test_settings.ini"
+DATA_FILE = "tests/test_backuper.ini"
 
-
-conf = settings.Settings()
+conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
 database.GoogleDriveDB.init()
 google = googledrive.GoogleDrive()
 drive_uploader = uploader.DriveUploader(conf, google)

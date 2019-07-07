@@ -10,39 +10,39 @@ from pytools import filetools as ft
 
 
 ENCODING = "UTF-8"
-SETTINGS_FILE = "settings.ini"
-DATA_FILE = "backuper.ini"
 
 
 class BaseFile(configparser.ConfigParser):
-    def __init__(self):
+    def __init__(self, file_path):
         super().__init__()
+        self.file_path = file_path
 
     def get_values(self, section, option, sep=";"):
         return self.get(section, option).strip(sep).split(sep)
 
     def get_unified_paths(self, section, option, sep=";"):
-        return { db.unify_path(path) 
+        # Paths are stripped to allow multiline values.
+        return { db.unify_path(path.strip()) 
             for path in self.get_values(section, option, sep=sep) if path }
 
     def get_unified_values(self, section, option, sep=";"):
-        return { db.unify_str(val) 
+        return { db.unify_str(val.strip()) 
             for val in self.get_values(section, option, sep=sep) if val }
 
-    def write_to_file(self, path):
-        with open(path, 'w', encoding=ENCODING) as f:
+    def write_to_file(self):
+        with open(self.file_path, 'w', encoding=ENCODING) as f:
             self.write(f)
 
 
 class UserSettingsFile(BaseFile):
     """Stores user modifiable settings. READ-ONLY. """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, file_path):
+        super().__init__(file_path)
 
-        if not self.read(SETTINGS_FILE, encoding=ENCODING):
+        if not self.read(self.file_path, encoding=ENCODING):
             self.make_layout()
-            self.write_to_file(SETTINGS_FILE)
+            self.write_to_file()
 
     def make_layout(self):
         self['Paths'] = {
@@ -65,12 +65,12 @@ class UserSettingsFile(BaseFile):
 class DataFile(BaseFile):
     """Stores application specific information."""
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, file_path):
+        super().__init__(file_path)
 
-        if not self.read(DATA_FILE, encoding=ENCODING):
+        if not self.read(self.file_path, encoding=ENCODING):
             self.make_layout()
-            self.write_to_file(DATA_FILE)
+            self.write_to_file()
 
     def make_layout(self):
         self['Backuper'] = {
@@ -79,6 +79,7 @@ class DataFile(BaseFile):
 
         self['GoogleDrive'] = {
             'folder_id': '',
+            'logs_folder_id': '',
             'last_backup_date': '',
             'last_change_token': '',
             'last_download_change_token': '',
@@ -127,13 +128,19 @@ class DataFile(BaseFile):
         return self.get("GoogleDrive", "folder_id", fallback=None)
 
     def set_root_folder_id(self, val):
-        self["GoogleDrive"]["folder_id"] = str(val)
+        self["GoogleDrive"]["folder_id"] = val
+
+    def get_logs_folder_id(self):
+        return self.get("GoogleDrive", "logs_folder_id", fallback=None)
+
+    def set_logs_folder_id(self, val):
+        self.config['GoogleDrive']['logs_folder_id'] = val
 
 
 class Settings:
-    def __init__(self):
-        self.user_settings_file = UserSettingsFile()
-        self.data_file = DataFile()
+    def __init__(self, user_settings_path, data_file_path):
+        self.user_settings_file = UserSettingsFile(user_settings_path)
+        self.data_file = DataFile(data_file_path)
 
         # blacklisted paths, folder names and file extensions are excluded and so are all
         # the children of those paths/folders
@@ -146,8 +153,14 @@ class Settings:
 
         self.sync_dirs = self.user_settings_file.get_paths_in_option("sync_dirs")
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.exit()
+
     def exit(self):
-        self.data_file.write_to_file(DATA_FILE)
+        self.data_file.write_to_file()
 
     def contains_blacklisted_ext(self, basename):
         for ext in self.blacklisted_extensions:

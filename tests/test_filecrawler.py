@@ -6,13 +6,13 @@ from backuper import database
 from backuper import googledrive
 
 
-settings.SETTINGS_FILE = "tests/test_settings.ini"
-settings.DATA_FILE = "tests/test_backuper.ini"
+SETTINGS_FILE = "tests/test_settings.ini"
+DATA_FILE = "tests/test_backuper.ini"
 
 
 def test_localfilecrawler():
     db = database.GoogleDriveDB()
-    conf = settings.Settings()
+    conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
     crawler = filecrawler.LocalFileCrawler(conf)
 
     for p in crawler.get_folders_to_sync("tests/"):
@@ -29,7 +29,7 @@ def test_localfilecrawler():
 
 def test_drivecrawler_folder(folder_id):
     db = database.GoogleDriveDB()
-    conf = settings.Settings()
+    conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
     crawler = filecrawler.DriveFileCrawler(conf, googledrive.GoogleDrive())
     
     for obj in crawler.get_ids_to_download_in_folder(folder_id):
@@ -40,7 +40,7 @@ def test_drivecrawler_folder(folder_id):
 
 def test_drivecrawler_changes(folder_id):
     db = database.GoogleDriveDB()
-    conf = settings.Settings()
+    conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
     crawler = filecrawler.DriveFileCrawler(conf, googledrive.GoogleDrive())
     
     change_date = datetime.datetime(2019, 5, 20)

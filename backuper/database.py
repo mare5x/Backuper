@@ -39,6 +39,9 @@ class GoogleDriveDB:
     def __exit__(self, *exc):
         GoogleDriveDB.close()
 
+    def __iter__(self):
+        return DriveArchive.select().iterator()
+
     @staticmethod
     def init():
         db.connect(reuse_if_open=True)
