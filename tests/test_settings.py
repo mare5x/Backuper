@@ -30,6 +30,6 @@ def print_settings():
 
 if __name__ == '__main__':
     print_settings()
-    print_unified_paths(conf.user_settings_file, "Paths", "log_paths_full")
+    print_unified_paths(conf.user_settings_file, "Paths", "tree_with_files")
     print_unified_paths(conf.user_settings_file, "Paths", "sync_dirs")
     conf.exit()

@@ -17,6 +17,14 @@ class BaseFile(configparser.ConfigParser):
         super().__init__()
         self.file_path = file_path
 
+    def get(self, *args, **kwargs):
+        val = super().get(*args, **kwargs)
+        # Overriden because empty strings '' don't trigger
+        # the fallback.
+        if not val:
+            return kwargs.get("fallback", val)
+        return val
+
     def get_values(self, section, option, sep=";"):
         return self.get(section, option).strip(sep).split(sep)
 
@@ -79,7 +87,7 @@ class DataFile(BaseFile):
 
         self['GoogleDrive'] = {
             'folder_id': '',
-            'logs_folder_id': '',
+            'trees_folder_id': '',
             'last_backup_date': '',
             'last_change_token': '',
             'last_download_change_token': '',
@@ -130,11 +138,11 @@ class DataFile(BaseFile):
     def set_root_folder_id(self, val):
         self["GoogleDrive"]["folder_id"] = val
 
-    def get_logs_folder_id(self):
-        return self.get("GoogleDrive", "logs_folder_id", fallback=None)
+    def get_trees_folder_id(self):
+        return self.get("GoogleDrive", "trees_folder_id", fallback=None)
 
-    def set_logs_folder_id(self, val):
-        self.config['GoogleDrive']['logs_folder_id'] = val
+    def set_trees_folder_id(self, val):
+        self['GoogleDrive']['trees_folder_id'] = val
 
 
 class Settings:
