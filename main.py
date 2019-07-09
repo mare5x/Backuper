@@ -5,12 +5,19 @@ import argparse
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-lsu", action="store_true", help="List changes that will get uploaded.")
+    parser.add_argument("-uc", action="store_true", help="Upload changes listed by -lsu (see settings.ini).")
+    parser.add_argument("-tree", action="store_true", help="Upload 'trees' of directories (see settings.ini).")
     args = parser.parse_args()
     
-    b = backuper.Backuper()
-    if args.lsu:
-        b.list_upload_changes()
+    with backuper.Backuper() as b:
+        if args.lsu:
+            b.list_upload_changes()
 
+        if args.uc:
+            b.upload_changes()
+
+        if args.tree:
+            b.upload_tree_logs_zip()
 
 if __name__ == "__main__":
     main()

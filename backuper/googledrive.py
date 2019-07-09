@@ -336,9 +336,8 @@ class GoogleDrive:
         if filename:
             return filename['name']
 
-    @handle_http_error(ignore=False)
-    def get_file_data_by_name(self, name):
-        return self.drive_service.files().list(q="name='{}'".format(name), fields='files').execute()['files']
+    def get_file_by_name(self, name, fields="files(id, name, parents)"):
+        return self.drive_service.files().list(q="name='{}'".format(name), fields=fields).execute()["files"]
 
     def get_files_in_folder(self, folder_id, fields="files(trashed, id, name)", q=None):
         """Yields all (non-trashed) files in a folder (direct children) with fields metadata. 
@@ -439,16 +438,25 @@ class GoogleDrive:
 
         return result
 
-    def batch_delete(self, ids):
+    def batch_delete(self, file_ids, callback=None):
+        """callback: callable, A callback to be called for each response, of the
+        form callback(file_id, response, exception). The first parameter is the
+        file id, and the second is the deserialized response object. The
+        third is an googleapiclient.errors.HttpError exception object if an HTTP error
+        occurred while processing the request, or None if no error occurred.
+        """
         batch = self.drive_service.new_batch_http_request()
         requests_in_batch = 0
-        for _id in ids:
+        for file_id in file_ids:
             if requests_in_batch >= self.BATCH_LIMIT:
                 batch.execute()
                 batch = self.drive_service.new_batch_http_request()
                 requests_in_batch = 0
 
-            batch.add(self.drive_service.files().delete(fileId=_id))
+            request = self.drive_service.files().delete(fileId=file_id)
+            # File ids are unique so we can use them as request ids.
+            request_id = file_id if callback else None
+            batch.add(request, callback=callback, request_id=request_id)
             requests_in_batch += 1
 
         if requests_in_batch > 0:
