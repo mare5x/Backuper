@@ -65,13 +65,14 @@ class DriveDownloader:
 
             q.task_done()
 
-    def wait_for_queue(self, q):
+    def wait_for_queue(self, q, stop=True):
         """q must be a DownloadQueue returned by the start_download_queue method.
-        After this method returns, consider the queue unusable. 
+        If 'stop' is True, consider the queue unusable. Associated threads will stop.
         """
         # Block until all tasks are done.
         q.join()
 
         # Stop worker threads.
-        for _ in range(q.n_threads):
-            q.put(None)
+        if stop:
+            for _ in range(q.n_threads):
+                q.put(None)
