@@ -464,7 +464,13 @@ class GoogleDrive:
 
     # @handle_http_error(ignore=False)
     def delete(self, file_id):
-        self.drive_service.files().delete(fileId=file_id).execute()
+        try:
+            self.drive_service.files().delete(fileId=file_id).execute()
+        except HttpError as e:
+            if e.resp.status == 404:  # File doesn't exist. Safe to ignore.
+                logging.warning("IGNORING: " + repr(e))
+            else:
+                raise e
 
     def exists(self, file_id):
         metadata = self.get_metadata(file_id, fields='trashed')
