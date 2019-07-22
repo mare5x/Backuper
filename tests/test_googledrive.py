@@ -108,6 +108,8 @@ def test_pretty_full():
 
         pp.delete(folder_id)
         pp.exit()
+
+        print("Remote path cache: hits: {}, misses: {}".format(pp.remote_cache.hits, pp.remote_cache.misses))
     print(LOG_PATH)
 
 if __name__ == "__main__":

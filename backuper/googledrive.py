@@ -20,7 +20,7 @@ from functools import wraps
 
 from .sharedtools import uploading_to
 from pytools import filetools as ft
-from pytools import printer
+from pytools import printer, cache
 
 
 NUM_RETRIES = 6
@@ -387,17 +387,19 @@ class GoogleDrive:
                     yield folder
 
             request = self.drive_service.files().list_next(request, response)
-            
+
+    def get_parent_id(self, file_id):
+        resp = self.get_metadata(file_id, fields="parents")
+        if resp and "parents" in resp: 
+            return resp["parents"][0]
+        return None
+    
     def get_parents(self, file_id):
         """NOTE: files are assumed to have at most ONE parent!"""
         parent_id = file_id
         while parent_id:
             yield parent_id
-            parent_id = self.get_metadata(parent_id, fields='id, parents')
-            if parent_id and 'parents' in parent_id:
-                parent_id = parent_id['parents'][0]
-            else:
-                parent_id = None
+            parent_id = self.get_parent_id(parent_id)
 
     def is_parent(self, folder_id, file_id):
         """Whether folder_id is a not necessarily direct parent of file_id."""
@@ -545,6 +547,9 @@ class PPGoogleDrive(GoogleDrive):
         self.downloaded_bytes = 0
         self.time_started = time.time()
 
+        # For remote path strings caching.
+        self.remote_cache = cache.LRUcache()
+
         self.write_header()
 
     def exit(self):
@@ -622,7 +627,17 @@ class PPGoogleDrive(GoogleDrive):
     def get_remote_path(self, file_id):
         # Uses a LRU cache to store known (file_id, path) pairs.
         # NOTE: the assumption is that no files will get moved or renamed!
-        pass
+        if file_id is None: return os.path.sep
+
+        path = self.remote_cache.get(file_id)
+        if path is not None: return path
+        
+        resp = self.get_metadata(file_id, fields="name,parents")
+        parent_id = resp["parents"][0] if "parents" in resp else None
+        path = os.path.join(self.get_remote_path(parent_id), resp["name"])
+
+        self.remote_cache[file_id] = path
+        return path
 
     def upload_file(self, file_path, folder_id='root', file_id=None, fields=None):
         # Override.
@@ -631,7 +646,7 @@ class PPGoogleDrive(GoogleDrive):
 
         operation = "UPDATE" if file_id else "NEW"
         file_id = resp["id"]
-        remote_path = resp["name"]
+        remote_path = self.get_remote_path(file_id)
         local_path = file_path
         if operation == "NEW":
             self.remote_new_count += 1
@@ -649,7 +664,7 @@ class PPGoogleDrive(GoogleDrive):
         
         operation = "NEW"
         file_id = resp
-        remote_path = name
+        remote_path = self.get_remote_path(file_id)
         local_path = self.UNKNOWN_FIELD
         self.remote_new_count += 1
         self.write_line(operation, file_id, remote_path, local_path)
@@ -658,7 +673,7 @@ class PPGoogleDrive(GoogleDrive):
 
     def delete(self, file_id):
         # Override.
-        remote_path = self.get_id_name(file_id)  # Before we delete it ...
+        remote_path = self.get_remote_path(file_id)  # Before we delete it ...
 
         resp = super().delete(file_id)
         
@@ -675,7 +690,7 @@ class PPGoogleDrive(GoogleDrive):
         resp = super().download_file(file_id, save_path, filename=filename)
 
         operation = "DOWNLOAD"
-        remote_path = os.path.basename(save_path)
+        remote_path = self.get_remote_path(file_id)
         local_path = resp
         self.download_count += 1
         self.downloaded_bytes += os.path.getsize(local_path)
