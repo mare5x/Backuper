@@ -11,6 +11,7 @@ import os
 import re
 import json
 import time
+import math
 import logging
 import datetime
 import mimetypes
@@ -114,6 +115,8 @@ def convert_datetime_to_google_time(dtime):
 
 
 class GoogleDrive:
+    # Note: https://developers.google.com/apis-explorer/#p/drive/v3/ is very handy!
+
     UPLOAD_CHUNK_SIZE = 4 * 1024 ** 2
     DOWNLOAD_CHUNK_SIZE = 4 * 1024 ** 2
     BATCH_LIMIT = 32
@@ -189,6 +192,10 @@ class GoogleDrive:
         for dir_response in dirs:
             yield from self.walk_folder(dir_response["id"], dirname=dir_response["name"], dirpath=dirpath, fields=fields, q=q)
 
+    def create_local_folder(self, path):
+        os.makedirs(path, exist_ok=True)
+        return path
+
     def download_folder(self, folder_id, save_path, folder_name=None):
         """Recursively download a folder and all its content.
 
@@ -197,11 +204,12 @@ class GoogleDrive:
             save_path: str to a directory
             folder_name: join folder_name to save_path if given, otherwise fetch folder name from Google Drive
         """
-        for file_kind, download_root_path, response in self.walk_folder_builder(folder_id, save_path, folder_name=folder_name):
-            if file_kind == "#folder":
-                os.makedirs(download_root_path, exist_ok=True)
-            else:
-                self.download_file(response['id'], download_root_path, response['name'])
+        for dirpath, dirnames, filenames in self.walk_folder(folder_id, dirname=folder_name):
+            dir_path, dir_id = dirpath
+            dl_root = os.path.join(save_path, dir_path)
+            self.create_local_folder(dl_root)
+            for filename in filenames:
+                self.download_file(filename["id"], dl_root, filename=filename["name"])
 
     def download_file(self, file_id, save_path, filename=None):
         """Download a file.
@@ -219,7 +227,7 @@ class GoogleDrive:
             if not filename:
                 return
 
-        os.makedirs(save_path, exist_ok=True)
+        self.create_local_folder(save_path)
         download_path = os.path.abspath(os.path.join(save_path, filename))
 
         logging.info("Downloading {} to {}".format(file_id, download_path))
@@ -245,6 +253,8 @@ class GoogleDrive:
         return self.upload_file(path, folder_id=folder_id, file_id=file_id, fields=fields)
 
     def upload_file(self, file_path, folder_id='root', file_id=None, fields=None):
+        """If file_id is specified, the file will be updated/patched."""
+
         logging.info("Uploading file: {}".format(file_path))
 
         mime, encoding = mimetypes.guess_type(file_path)
@@ -510,3 +520,176 @@ class GoogleDrive:
                 return
 
             page_token = changes_request.get('nextPageToken')
+
+
+class PPGoogleDrive(GoogleDrive):
+    """Wrapper around GoogleDrive that pretty-prints GD file transfers."""
+
+    SECTION_NAMES = ["OPERATION", "FILE ID", "REMOTE PATH", "LOCAL PATH"]
+    SECTION_WIDTHS = [9, 33, 40, 80]
+
+    UNKNOWN_FIELD = "---"
+
+    def __init__(self, stream):
+        """Pretty print output to stream."""
+        super().__init__()
+
+        self.stream = stream
+
+        self.remote_update_bytes = 0
+        self.remote_new_bytes = 0
+        self.remote_new_count = 0
+        self.remote_update_count = 0
+        self.remote_delete_count = 0
+        self.download_count = 0
+        self.downloaded_bytes = 0
+        self.time_started = time.time()
+
+        self.write_header()
+
+    def exit(self):
+        self.write_footer()
+
+    def write_header(self):
+        self.stream.write("{}\n".format(time.strftime("%Y %b %d %H:%M:%S", time.gmtime())))
+        self.stream.write('\n')
+        self.write_line(*self.SECTION_NAMES, min_rows=3)
+        self.write_line(*['-' * width for width in self.SECTION_WIDTHS])
+    
+    def write_footer(self):
+        self.stream.write('\n')
+        
+        self.stream.write("TIME ELAPSED: ")
+        self.stream.write(ft.format_seconds(time.time() - self.time_started))
+        self.stream.write('\n')
+
+        widths = [16, 5, 8]
+        self.write_table_row(self.stream, ['-' * w for w in widths], widths)
+        self.write_table_row(self.stream, 
+            ["NEWER", str(self.remote_new_count), ft.convert_file_size(self.remote_new_bytes)], 
+            widths)
+        self.write_table_row(self.stream, 
+            ["UPDATED", str(self.remote_update_count), ft.convert_file_size(self.remote_update_bytes)], 
+            widths)
+        self.write_table_row(self.stream,
+            ["DELETED", str(self.remote_delete_count), self.UNKNOWN_FIELD],
+            widths)
+        self.write_table_row(self.stream,
+            ["DOWNLOADED", str(self.download_count), ft.convert_file_size(self.downloaded_bytes)],
+            widths)
+        self.write_table_row(self.stream, ['-' * w for w in widths], widths)
+
+    @staticmethod
+    def write_table_row(stream, sections, section_widths, center_cols=True, center_rows=True, min_rows=0, sep='|'):
+        """Each section has a max width. If it exceeds that limit, it is 
+        printed in the next line. Text in each section can be centerd 
+        horizontally or vertically. If min_rows is specified, each row will have 
+        at least that many rows.
+        """
+        n = len(sections)
+        n_rows = max((math.ceil(len(sections[i]) / section_widths[i]) for i in range(n)))
+        n_rows = max(n_rows, min_rows)
+        sections_start_idx = [0] * n  # If center_rows, at which row does each section start.
+        if center_rows:
+            for i in range(n):
+                span = math.ceil(len(sections[i]) / section_widths[i])
+                sections_start_idx[i] = (n_rows - span) // 2
+
+        for row_idx in range(n_rows):
+            for j in range(n):
+                width = section_widths[j]
+                section = sections[j]
+                section_len = len(section)
+                start_idx = width * (row_idx - sections_start_idx[j])
+                if start_idx >= 0 and start_idx < section_len:
+                    end_idx = min(section_len, start_idx + width)
+                    written = end_idx - start_idx
+                    if center_cols:
+                        offset = ((width - written) // 2) if (written < width) else 0
+                        stream.write(' ' * offset)
+                        width -= offset
+                    stream.write(section[start_idx:end_idx])
+                    width -= written
+                stream.write(' ' * width)
+                if j < n - 1:
+                    stream.write(sep)
+            stream.write('\n')
+
+    def write_line(self, operation, file_id, remote_path, local_path, **kwargs):
+        sections = [operation, file_id, remote_path, local_path]
+        self.write_table_row(self.stream, sections, self.SECTION_WIDTHS, **kwargs)
+
+    def get_remote_path(self, file_id):
+        # Uses a LRU cache to store known (file_id, path) pairs.
+        # NOTE: the assumption is that no files will get moved or renamed!
+        pass
+
+    def upload_file(self, file_path, folder_id='root', file_id=None, fields=None):
+        # Override.
+        fields = self.add_to_fields(fields, "id,name,size")
+        resp = super().upload_file(file_path, folder_id=folder_id, file_id=file_id, fields=fields)
+
+        operation = "UPDATE" if file_id else "NEW"
+        file_id = resp["id"]
+        remote_path = resp["name"]
+        local_path = file_path
+        if operation == "NEW":
+            self.remote_new_count += 1
+            self.remote_new_bytes += int(resp.get("size", 0))
+        else:                
+            self.remote_update_count += 1
+            self.remote_update_bytes += int(resp.get("size", 0))
+        self.write_line(operation, file_id, remote_path, local_path)
+
+        return resp
+
+    def create_folder(self, name, parent_id='root'):
+        # Override.
+        resp = super().create_folder(name, parent_id=parent_id)
+        
+        operation = "NEW"
+        file_id = resp
+        remote_path = name
+        local_path = self.UNKNOWN_FIELD
+        self.remote_new_count += 1
+        self.write_line(operation, file_id, remote_path, local_path)
+
+        return resp
+
+    def delete(self, file_id):
+        # Override.
+        remote_path = self.get_id_name(file_id)  # Before we delete it ...
+
+        resp = super().delete(file_id)
+        
+        operation = "DELETE"
+        if remote_path is None: remote_path = self.UNKNOWN_FIELD
+        local_path = self.UNKNOWN_FIELD
+        self.remote_delete_count += 1
+        self.write_line(operation, file_id, remote_path, local_path)
+
+        return resp
+
+    def download_file(self, file_id, save_path, filename=None):
+        # Override.
+        resp = super().download_file(file_id, save_path, filename=filename)
+
+        operation = "DOWNLOAD"
+        remote_path = os.path.basename(save_path)
+        local_path = resp
+        self.download_count += 1
+        self.downloaded_bytes += os.path.getsize(local_path)
+        self.write_line(operation, file_id, remote_path, local_path)
+
+        return resp
+
+    def create_local_folder(self, path):
+        # Override.
+        if not os.path.exists(path):
+            operation = "DOWNLOAD"
+            file_id = self.UNKNOWN_FIELD
+            remote_path = self.UNKNOWN_FIELD
+            local_path = path
+            self.download_count += 1
+            self.write_line(operation, file_id, remote_path, local_path)
+        return super().create_local_folder(path)
