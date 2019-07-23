@@ -1,3 +1,4 @@
+import sys
 import os
 import tempfile
 import time
@@ -40,8 +41,7 @@ def test_file_upload(pretty=False):
     PRETTY_FPATH = "tests/test_file_upload.log"
 
     if pretty:
-        fpretty = open(PRETTY_FPATH, "w")
-        g = googledrive.PPGoogleDrive(fpretty)
+        g = googledrive.PPGoogleDrive(filename=PRETTY_FPATH)
 
     filetools.create_empty_file(FPATH)
     r = g.upload_file(FPATH, folder_id='root', fields=FIELDS)
@@ -61,9 +61,7 @@ def test_file_upload(pretty=False):
 
     g.delete(r['id'])
 
-    if pretty:
-        fpretty.close()
-        print(PRETTY_FPATH)
+    if pretty: print(PRETTY_FPATH)
 
 def test_list():
     for r in g.get_files_in_folder('root'):
@@ -75,41 +73,50 @@ def test_walk_folder(folder_id):
     for dirpath, dirnames, filenames in g.walk_folder(folder_id, fields="files(id, md5Checksum, name)"):
         print(dirpath, dirnames, filenames)
 
-def test_pretty_print():
-    with open("tests/test.txt", "w") as f:
-        googledrive.PPGoogleDrive.SECTION_WIDTHS = [4, 4, 21, 20]        
-        pp = googledrive.PPGoogleDrive(f)
-        pp.write_line("A" * 9, "B" * 18, "C" * 21, "D" * 42)
-        pp.exit()
+def test_pretty_print():    
+    googledrive.PPGoogleDrive.SECTION_WIDTHS = [4, 4, 21, 20]
+    FPATH = "tests/test.txt"
+    pp = googledrive.PPGoogleDrive(filename=FPATH)
+    pp.write_line("A" * 9, "B" * 18, "C" * 21, "D" * 42)
+    pp.exit()
+    print(FPATH)
+
+    pp = googledrive.PPGoogleDrive(stream=sys.stdout)
+    pp.write_line("A" * 9, "B" * 18, "C" * 21, "D" * 42)
+    pp.exit()
+
+    try:
+        pp = googledrive.PPGoogleDrive(stream=sys.stdout, filename=FPATH)
+    except ValueError as e:
+        print(e)
 
 def test_pretty_full():
     LOG_PATH = "tests/test_pretty_full.log"
-    with open(LOG_PATH, "w") as f:
-        pp = googledrive.PPGoogleDrive(f)  
-        # folder_id = pp.upload_directory("tests/")
-        
-        folder_id = ''
-        
-        with tempfile.TemporaryDirectory() as tmpdir:
-            folder_id = pp.create_folder("test folder")
-            file1 = os.path.join(tmpdir, "file1.txt")
-            f = open(file1, "w")
-            f.write("hello")
-            f.close()
-            file_id = pp.upload_file(file1, folder_id=folder_id)['id']
-            f = open(file1, "a")
-            f.write(", world!")
-            f.close()
-            pp.upload_file(file1, folder_id=folder_id, file_id=file_id)
-            pp.delete(file_id)
-            pp.upload_file(file1, folder_id=folder_id)
-        
-            pp.download_folder(folder_id, tmpdir)
+    pp = googledrive.PPGoogleDrive(filename=LOG_PATH)  
+    # folder_id = pp.upload_directory("tests/")
+    
+    folder_id = ''
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        folder_id = pp.create_folder("test folder")
+        file1 = os.path.join(tmpdir, "file1.txt")
+        f = open(file1, "w")
+        f.write("hello")
+        f.close()
+        file_id = pp.upload_file(file1, folder_id=folder_id)['id']
+        f = open(file1, "a")
+        f.write(", world!")
+        f.close()
+        pp.upload_file(file1, folder_id=folder_id, file_id=file_id)
+        pp.delete(file_id)
+        pp.upload_file(file1, folder_id=folder_id)
+    
+        pp.download_folder(folder_id, tmpdir)
 
-        pp.delete(folder_id)
-        pp.exit()
-
-        print("Remote path cache: hits: {}, misses: {}".format(pp.remote_cache.hits, pp.remote_cache.misses))
+    pp.delete(folder_id)
+    pp.exit()
+    
+    print("Remote path cache: hits: {}, misses: {}".format(pp.remote_cache.hits, pp.remote_cache.misses))
     print(LOG_PATH)
 
 if __name__ == "__main__":

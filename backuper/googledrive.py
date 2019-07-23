@@ -17,6 +17,7 @@ import datetime
 import mimetypes
 import concurrent.futures
 from functools import wraps
+from threading import Lock
 
 from .sharedtools import uploading_to
 from pytools import filetools as ft
@@ -142,6 +143,8 @@ class GoogleDrive:
         # Create a new Http() object for every request
         http = self.credentials.authorize(httplib2.Http())
         return HttpRequest(http, *args, **kwargs)
+
+    def exit(self): pass  # Stub.
 
     def print_progress_bar(self, block, progress, time_started, desc=""):
         """
@@ -532,11 +535,28 @@ class PPGoogleDrive(GoogleDrive):
 
     UNKNOWN_FIELD = "---"
 
-    def __init__(self, stream):
-        """Pretty print output to stream."""
+    LOG_LEVEL = 1
+
+    def __init__(self, stream=None, filename=None, **kwargs):
+        """Pretty print output to stream or to a file."""
         super().__init__()
 
-        self.stream = stream
+        if stream is not None and filename is not None:
+            raise ValueError("'stream' and 'filename' should not be specified together")
+
+        # For printing we will abuse the logging module.
+        # That way we don't have to handle thread safety manually.
+        self.logger = logging.getLogger("PPGoogleDrive")
+        self.logger.propagate = False
+        self.logger.setLevel(self.LOG_LEVEL)
+        if filename is not None:
+            handler = logging.FileHandler(filename, 
+                mode=kwargs.get("mode", "w"), encoding=kwargs.get("encoding", "utf8"))
+        if stream is not None:
+            handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter(fmt="%(message)s"))
+        handler.terminator = ''
+        self.logger.addHandler(handler)
 
         self.remote_update_bytes = 0
         self.remote_new_bytes = 0
@@ -554,35 +574,36 @@ class PPGoogleDrive(GoogleDrive):
 
     def exit(self):
         self.write_footer()
+        for h in self.logger.handlers:
+            h.close()
+        super().exit()
+
+    def write(self, msg):
+        self.logger.log(self.LOG_LEVEL, msg)
 
     def write_header(self):
-        self.stream.write("{}\n".format(time.strftime("%Y %b %d %H:%M:%S", time.gmtime())))
-        self.stream.write('\n')
+        self.write("\n{}\n\n".format(time.strftime("%Y %b %d %H:%M:%S", time.gmtime())))
         self.write_line(*self.SECTION_NAMES, min_rows=3)
         self.write_line(*['-' * width for width in self.SECTION_WIDTHS])
     
-    def write_footer(self):
-        self.stream.write('\n')
-        
-        self.stream.write("TIME ELAPSED: ")
-        self.stream.write(ft.format_seconds(time.time() - self.time_started))
-        self.stream.write('\n')
+    def write_footer(self):        
+        self.write("\nTIME ELAPSED: " + ft.format_seconds(time.time() - self.time_started) + '\n')
 
         widths = [16, 5, 8]
-        self.write_table_row(self.stream, ['-' * w for w in widths], widths)
-        self.write_table_row(self.stream, 
+        self.write_table_row(self, ['-' * w for w in widths], widths)
+        self.write_table_row(self, 
             ["NEWER", str(self.remote_new_count), ft.convert_file_size(self.remote_new_bytes)], 
             widths)
-        self.write_table_row(self.stream, 
+        self.write_table_row(self, 
             ["UPDATED", str(self.remote_update_count), ft.convert_file_size(self.remote_update_bytes)], 
             widths)
-        self.write_table_row(self.stream,
+        self.write_table_row(self,
             ["DELETED", str(self.remote_delete_count), self.UNKNOWN_FIELD],
             widths)
-        self.write_table_row(self.stream,
+        self.write_table_row(self,
             ["DOWNLOADED", str(self.download_count), ft.convert_file_size(self.downloaded_bytes)],
             widths)
-        self.write_table_row(self.stream, ['-' * w for w in widths], widths)
+        self.write_table_row(self, ['-' * w for w in widths], widths)
 
     @staticmethod
     def write_table_row(stream, sections, section_widths, center_cols=True, center_rows=True, min_rows=0, sep='|'):
@@ -601,6 +622,7 @@ class PPGoogleDrive(GoogleDrive):
                 sections_start_idx[i] = (n_rows - span) // 2
 
         for row_idx in range(n_rows):
+            line = ""
             for j in range(n):
                 width = section_widths[j]
                 section = sections[j]
@@ -611,18 +633,18 @@ class PPGoogleDrive(GoogleDrive):
                     written = end_idx - start_idx
                     if center_cols:
                         offset = ((width - written) // 2) if (written < width) else 0
-                        stream.write(' ' * offset)
+                        line += ' ' * offset
                         width -= offset
-                    stream.write(section[start_idx:end_idx])
+                    line += section[start_idx:end_idx]
                     width -= written
-                stream.write(' ' * width)
+                line += ' ' * width
                 if j < n - 1:
-                    stream.write(sep)
-            stream.write('\n')
+                    line += sep
+            stream.write(line + '\n')
 
     def write_line(self, operation, file_id, remote_path, local_path, **kwargs):
         sections = [operation, file_id, remote_path, local_path]
-        self.write_table_row(self.stream, sections, self.SECTION_WIDTHS, **kwargs)
+        self.write_table_row(self, sections, self.SECTION_WIDTHS, **kwargs)
 
     def get_remote_path(self, file_id):
         # Uses a LRU cache to store known (file_id, path) pairs.
