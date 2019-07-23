@@ -1,3 +1,4 @@
+import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -12,10 +13,18 @@ DATA_FILE = "_backuper.ini"
 
 
 class Backuper:
-    def __init__(self):
-        self.conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
-        self.google = googledrive.GoogleDrive()
+    def __init__(self, pretty_log=False):
         database.GoogleDriveDB.init()
+        self.conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
+        
+        if pretty_log:
+            dirpath = ft.create_dir("logs")
+            name = "BackuperPP_{}.log".format(ft.get_current_date_string())
+            path = os.path.join(dirpath, name)
+            self.google = googledrive.PPGoogleDrive(filename=path, mode="a")
+            print(path)
+        else:
+            self.google = googledrive.GoogleDrive()
 
     def __enter__(self):
         return self
@@ -24,6 +33,7 @@ class Backuper:
         self.exit()
 
     def exit(self):
+        self.google.exit()
         self.conf.exit()
         database.GoogleDriveDB.close()
 

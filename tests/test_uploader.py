@@ -38,7 +38,7 @@ def db_upload_test(path):
 
 def upload_test(path):
     conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
-    google = googledrive.GoogleDrive()
+    google = googledrive.PPGoogleDrive(filename="tests/test.txt")
     ul = uploader.DriveUploader(conf, google)
 
     folder_id = ul.create_dir(path, folder_name="BackuperUploadTest", parent_folder_id="root")
@@ -50,8 +50,9 @@ def upload_test(path):
     input("Press any key to clean up.")
     google.delete(folder_id)
 
+    google.exit()
     conf.exit()
 
 if __name__ == "__main__":
-    db_upload_test("tests/")
+    # db_upload_test("tests/")
     upload_test("tests/")

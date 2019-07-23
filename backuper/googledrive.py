@@ -17,7 +17,6 @@ import datetime
 import mimetypes
 import concurrent.futures
 from functools import wraps
-from threading import Lock
 
 from .sharedtools import uploading_to
 from pytools import filetools as ft
@@ -589,7 +588,7 @@ class PPGoogleDrive(GoogleDrive):
     def write_footer(self):        
         self.write("\nTIME ELAPSED: " + ft.format_seconds(time.time() - self.time_started) + '\n')
 
-        widths = [16, 5, 8]
+        widths = [16, 6, 10]
         self.write_table_row(self, ['-' * w for w in widths], widths)
         self.write_table_row(self, 
             ["NEWER", str(self.remote_new_count), ft.convert_file_size(self.remote_new_bytes)], 

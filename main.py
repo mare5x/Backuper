@@ -7,9 +7,10 @@ def main():
     parser.add_argument("-lsu", action="store_true", help="List changes that will get uploaded.")
     parser.add_argument("-uc", action="store_true", help="Upload changes listed by -lsu (see settings.ini).")
     parser.add_argument("-tree", action="store_true", help="Upload 'trees' of directories (see settings.ini).")
+    parser.add_argument("-log", action="store_true", help="Create a pretty log file of all I/O operations.")
     args = parser.parse_args()
     
-    with backuper.Backuper() as b:
+    with backuper.Backuper(pretty_log=args.log) as b:
         if args.lsu:
             b.list_upload_changes()
 
