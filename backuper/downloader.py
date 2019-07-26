@@ -1,17 +1,15 @@
 import os
-import queue
 from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
 
 from pytools import filetools as ft
 
 from . import database as db
+from . import _loader
 
 
 DLQEntry = namedtuple("DLQEntry", ["type", "file_id", "path", "md5sum", "filename"], defaults=['', ''])
 
-class DownloadQueue(queue.Queue):
-    pass
+class DownloadQueue(_loader._Queue): pass
 
 
 class DriveDownloader:
@@ -42,37 +40,16 @@ class DriveDownloader:
         Returns a DownloadQueue object. Populate the queue with DLQEntry objects
         using the queue's put() method. When done, call wait_for_queue(q).
         """
-        q = DownloadQueue()
-        q.n_threads = n_threads  # A convenience attribute.
-        executor = ThreadPoolExecutor(max_workers=n_threads, thread_name_prefix="DriveDownloader")
-        for _ in range(n_threads):
-            executor.submit(self.download_queue_worker, q)
-        # The resources associated with the executor will be freed when all pending futures are done executing.
-        executor.shutdown(wait=False)
-        return q
+        return _loader.start_queue(self.process_queue_entry, n_threads=n_threads, thread_prefix="DriveDownloader")
 
-    def download_queue_worker(self, q):
-        while True:
-            entry = q.get()
-            if entry is None:
-                q.task_done()
-                break
-
-            if entry.type == "#folder":
-                self.create_folder(entry.file_id, entry.path)
-            else:  # "#file"
-                self.download_file(entry.file_id, entry.path, entry.filename, entry.md5sum)
-
-            q.task_done()
+    def process_queue_entry(self, entry):
+        if entry.type == "#folder":
+            self.create_folder(entry.file_id, entry.path)
+        else:  # "#file"
+            self.download_file(entry.file_id, entry.path, entry.filename, entry.md5sum)
 
     def wait_for_queue(self, q, stop=True):
         """q must be a DownloadQueue returned by the start_download_queue method.
         If 'stop' is True, consider the queue unusable. Associated threads will stop.
         """
-        # Block until all tasks are done.
-        q.join()
-
-        # Stop worker threads.
-        if stop:
-            for _ in range(q.n_threads):
-                q.put(None)
+        return _loader.wait_for_queue(q, stop=True)

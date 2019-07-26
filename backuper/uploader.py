@@ -1,15 +1,13 @@
 import os
-import queue
-from concurrent.futures import ThreadPoolExecutor
 from collections import namedtuple
 
 from pytools import filetools as ft
 
 from . import database as db
+from . import _loader
 
 
-class UploadQueue(queue.Queue):
-    pass   
+class UploadQueue(_loader._Queue): pass
 
 
 class DriveUploader:
@@ -51,14 +49,8 @@ class DriveUploader:
         When enqueuing files/dirs that have parents, make sure the parents 
         have already been created.
         """
-        q = UploadQueue()
-        q.n_threads = n_threads  # A convenience attribute.
-        executor = ThreadPoolExecutor(max_workers=n_threads, thread_name_prefix="DriveUploader")
-        for i in range(n_threads):
-            executor.submit(self.upload_queue_worker, q)
-        # The resources associated with the executor will be freed when all pending futures are done executing.
-        executor.shutdown(wait=False)
-        return q
+        return _loader.start_queue(self.process_queue_entry, n_threads=n_threads, 
+            thread_prefix="DriveUploader")
 
     def process_queue_entry(self, qentry):
         """Subclasses can override this function and DUQEntry's definition."""
@@ -67,28 +59,13 @@ class DriveUploader:
         else:
             self.upload_file(qentry.path, folder_id=qentry.folder_id, file_id=qentry.file_id)
 
-    def upload_queue_worker(self, q):
-        while True:
-            entry = q.get()
-            if entry is None:
-                q.task_done()
-                break
-
-            self.process_queue_entry(entry)
-
-            q.task_done()
-
     def wait_for_queue(self, q, stop=True):
         """q must be an UploadQueue returned by the start_upload_queue method.
         If 'stop' is True, consider the queue unusable. Associated threads will stop.
-        """
-        # Block until all tasks are done.
-        q.join()
 
-        # Stop worker threads.
-        if stop:
-            for _ in range(q.n_threads):
-                q.put(None)
+        Exceptions raised by threads working the queue will get raised here.
+        """
+        return _loader.wait_for_queue(q, stop=stop)
 
 
 class DBDriveUploader(DriveUploader):

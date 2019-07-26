@@ -43,15 +43,17 @@ def upload_test(path):
 
     folder_id = ul.create_dir(path, folder_name="BackuperUploadTest", parent_folder_id="root")
     q = ul.start_upload_queue()
+    # q.put(ul.DUQEntry("qpeworiu", "qweqrpouiwqer"))
     for name in os.listdir(path):
         q.put(ul.DUQEntry(os.path.join(path, name), folder_id))
-    ul.wait_for_queue(q)
+    try:
+        ul.wait_for_queue(q)
+    finally:
+        input("Press any key to clean up.")
+        google.delete(folder_id)
 
-    input("Press any key to clean up.")
-    google.delete(folder_id)
-
-    google.exit()
-    conf.exit()
+        google.exit()
+        conf.exit()
 
 if __name__ == "__main__":
     # db_upload_test("tests/")
