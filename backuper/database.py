@@ -71,16 +71,25 @@ class GoogleDriveDB:
             inst.delete_instance()
 
     @staticmethod
-    def update(**kwargs):
+    def update(inst, **kwargs):
         for key, value in kwargs.items():
-            setattr(DriveArchive, key, value)
-        return DriveArchive.save()
+            setattr(inst, key, value)
+        return inst.save()
 
     @staticmethod
     def create_or_update(**kwargs):
-        model, created = DriveArchive.get_or_create(**kwargs)
+        # Use unique fields for the 'get' part. And the rest
+        # for updating/creating.
+        UNIQUE = ["path", "drive_id"]
+        get = dict()
+        for field in UNIQUE:
+            if field in kwargs:
+                get[field] = kwargs.pop(field)
+
+        model, created = DriveArchive.get_or_create(**get, defaults=kwargs)
         if not created:
-            GoogleDriveDB.update(**kwargs)
+            GoogleDriveDB.update(model, **kwargs)
+        return model
 
     @staticmethod
     def get_parent_folder_id(path, fallback="root"):
