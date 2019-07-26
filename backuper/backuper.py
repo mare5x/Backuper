@@ -1,6 +1,7 @@
 import os
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import logging
+import concurrent.futures
 
 from pytools import filetools as ft
 
@@ -22,6 +23,7 @@ class Backuper:
             name = "BackuperPP_{}.log".format(ft.get_current_date_string())
             path = os.path.join(dirpath, name)
             self.google = googledrive.PPGoogleDrive(filename=path, mode="a")
+            logging.info("PrettyPrint log file: %s", path)
             print(path)
         else:
             self.google = googledrive.GoogleDrive()
@@ -49,10 +51,13 @@ class Backuper:
         # First, the folder structure must be made so that files can be placed
         # in the correct directories. This can't be queued because the order is 
         # important.
-        with ThreadPoolExecutor(max_workers=THREADS, thread_name_prefix="Backuper") as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=THREADS, thread_name_prefix="Backuper") as ex:
+            futures = []
             for dirpath in self.conf.sync_dirs:
-                ex.submit(self._upload_folder_structure, dirpath, gd_uploader)
-        
+                futures.append(ex.submit(self._upload_folder_structure, dirpath, gd_uploader))
+            for fut in concurrent.futures.as_completed(futures):
+                fut.result()  # Re-raise the exception, if it occurred once all threads are done.
+
         # Now, we can upload the files.
         q = gd_uploader.start_upload_queue(n_threads=THREADS)
         for dirpath in self.conf.sync_dirs:

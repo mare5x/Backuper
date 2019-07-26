@@ -232,7 +232,7 @@ class GoogleDrive:
         self.create_local_folder(save_path)
         download_path = os.path.abspath(os.path.join(save_path, filename))
 
-        logging.info("Downloading {} to {}".format(file_id, download_path))
+        logging.info("GD DL: {} -> {}".format(file_id, download_path))
 
         request = self.drive_service.files().get_media(fileId=file_id)
         with open(download_path, 'wb') as f:
@@ -257,7 +257,7 @@ class GoogleDrive:
     def upload_file(self, file_path, folder_id='root', file_id=None, fields=None):
         """If file_id is specified, the file will be updated/patched."""
 
-        logging.info("Uploading file: {}".format(file_path))
+        logging.info("GD UL: {}".format(file_path))
 
         mime, encoding = mimetypes.guess_type(file_path)
         if mime is None:
@@ -293,8 +293,6 @@ class GoogleDrive:
         return self.drive_service.files().create(body=body, media_body=media_body, **kwargs)
 
     def upload_directory(self, dir_path, root_id='root'):
-        logging.info("Uploading directory: {}".format(dir_path))
-
         archived_dirs = {}
         for root, dirs, files in os.walk(dir_path):
             parent_id = archived_dirs.get(ft.parent_dir(root), root_id)
@@ -311,6 +309,8 @@ class GoogleDrive:
 
     @handle_http_error(ignore=False)
     def create_folder(self, name, parent_id='root'):
+        logging.info("GD UL DIR: {}".format(name))
+
         body = {
             'name': name,
             'parents': [parent_id],
@@ -482,7 +482,7 @@ class GoogleDrive:
             self.drive_service.files().delete(fileId=file_id).execute()
         except HttpError as e:
             if e.resp.status == 404:  # File doesn't exist. Safe to ignore.
-                logging.warning("IGNORING: " + repr(e))
+                logging.warning("GD IGNORING: " + repr(e))
             else:
                 raise e
 

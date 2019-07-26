@@ -1,15 +1,29 @@
-from backuper import backuper
 import argparse
+import logging
+
+from pytools import filetools as ft
+
+from backuper import backuper
 
 
-def main():
+def main(log=True):
+    if log:
+        # One log file for each day. Running the program multiple times
+        # a day will append to the same file.
+        name = "Backuper_{}.log".format(ft.get_current_date_string())
+        ft.init_log_file(name, overwrite=True, mode="a")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-lsu", action="store_true", help="List changes that will get uploaded.")
     parser.add_argument("-uc", action="store_true", help="Upload changes listed by -lsu (see settings.ini).")
     parser.add_argument("-tree", action="store_true", help="Upload 'trees' of directories (see settings.ini).")
     parser.add_argument("-log", action="store_true", help="Create a pretty log file of all I/O operations.")
     args = parser.parse_args()
-    
+
+    if not any(vars(args).values()):
+        parser.print_help()
+        return -1
+
     with backuper.Backuper(pretty_log=args.log) as b:
         if args.lsu:
             b.list_upload_changes()
