@@ -138,12 +138,30 @@ class GoogleDrive:
 
         self.drive_service = build('drive', 'v3', credentials=self.credentials, requestBuilder=self._build_request)
 
+        # For remote path strings caching.
+        self.remote_cache = cache.LRUcache()
+
     def _build_request(self, _http, *args, **kwargs):
         # Create a new Http() object for every request
         http = self.credentials.authorize(httplib2.Http())
         return HttpRequest(http, *args, **kwargs)
 
     def exit(self): pass  # Stub.
+
+    def get_remote_path(self, file_id):
+        # Uses a LRU cache to store known (file_id, path) pairs.
+        # NOTE: the assumption is that no files will get moved or renamed!
+        if file_id is None: return os.path.sep
+
+        path = self.remote_cache.get(file_id)
+        if path is not None: return path
+        
+        resp = self.get_metadata(file_id, fields="name,parents")
+        parent_id = resp["parents"][0] if "parents" in resp else None
+        path = os.path.join(self.get_remote_path(parent_id), resp["name"])
+
+        self.remote_cache[file_id] = path
+        return path
 
     def print_progress_bar(self, block, progress, time_started, desc=""):
         """
@@ -499,7 +517,8 @@ class GoogleDrive:
 
     # @handle_http_error(ignore=True)
     def get_changes(self, start_page_token=None, fields=None, include_removed=True):
-        """Yield response of all changes since start_page_token."""
+        """Yield response of all changes since start_page_token.
+        NOTE: if include_removed is True, trashed files will still be shown."""
 
         page_token = start_page_token
 
@@ -565,9 +584,6 @@ class PPGoogleDrive(GoogleDrive):
         self.download_count = 0
         self.downloaded_bytes = 0
         self.time_started = time.time()
-
-        # For remote path strings caching.
-        self.remote_cache = cache.LRUcache()
 
         self.write_header()
 
@@ -644,21 +660,6 @@ class PPGoogleDrive(GoogleDrive):
     def write_line(self, operation, file_id, remote_path, local_path, **kwargs):
         sections = [operation, file_id, remote_path, local_path]
         self.write_table_row(self, sections, self.SECTION_WIDTHS, **kwargs)
-
-    def get_remote_path(self, file_id):
-        # Uses a LRU cache to store known (file_id, path) pairs.
-        # NOTE: the assumption is that no files will get moved or renamed!
-        if file_id is None: return os.path.sep
-
-        path = self.remote_cache.get(file_id)
-        if path is not None: return path
-        
-        resp = self.get_metadata(file_id, fields="name,parents")
-        parent_id = resp["parents"][0] if "parents" in resp else None
-        path = os.path.join(self.get_remote_path(parent_id), resp["name"])
-
-        self.remote_cache[file_id] = path
-        return path
 
     def upload_file(self, file_path, folder_id='root', file_id=None, fields=None):
         # Override.

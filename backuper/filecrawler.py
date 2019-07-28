@@ -52,23 +52,27 @@ class LocalFileCrawler:
 
 
 class DriveFileCrawler:
+    CONFLICT_FLAG = -1
+    NEUTRAL_FLAG = 0
+    SAFE_FLAG = 1
+
     def __init__(self, settings, google):
         self.conf = settings
         self.google = google
 
-    def is_for_download(self, file_id, file_md5):
+    def is_for_download(self, file_id, file_md5, remote_time=None):
         """Check if a file on Google Drive is to be downloaded.
 
         Returns:
-            0: int, don't sync
-            1: int, safe sync
-            -1: int, conflict
+            NEUTRAL_FLAG: int, don't sync
+            SAFE_FLAG: int, safe sync
+            CONFLICT_FLAG: int, conflict
         Note:
             Manually check if the file_id points to a folder.
         """
-        # TODO check time modified?
-
         # Ugly case analysis code ahead.
+
+        CONFLICT_FLAG, NEUTRAL_FLAG, SAFE_FLAG = self.CONFLICT_FLAG, self.NEUTRAL_FLAG, self.SAFE_FLAG
 
         # The first check is whether the file in the cloud is also in the
         # local database. If the file is not in the database, 
@@ -78,11 +82,11 @@ class DriveFileCrawler:
             # It is possible for a file to be in the database, despite being
             # blacklisted. In that case, we do not want to download it.
             if self.conf.is_blacklisted(db_entry.path):
-                return 0
+                return NEUTRAL_FLAG
 
             # The file has been deleted from the local file system. Was that intentional?
             if not os.path.exists(db_entry.path):
-                return -1
+                return CONFLICT_FLAG
 
             # We use md5 checksums because Google provides them when requesting files.
             # There are 3 different md5 checksums we can check: the local file, the 
@@ -114,10 +118,15 @@ class DriveFileCrawler:
             p = file_md5 == db_entry.md5sum
             q = file_md5 == local_md5
             r = local_md5 == db_entry.md5sum
-            if p or q: return 0
-            if r: return 1
-            return -1
-        return 1
+            if p or q: return NEUTRAL_FLAG
+            if r: return SAFE_FLAG
+
+            # The conflict might be resolved by looking at the change time ...
+            if remote_time is not None and (remote_time < db_entry.date_modified_on_disk \
+                                            or remote_time < ft.date_modified(db_entry.path)):
+                return NEUTRAL_FLAG
+            return CONFLICT_FLAG
+        return SAFE_FLAG
 
     def get_parent_archive(self, file_id):
         parent_archive = None
@@ -127,12 +136,17 @@ class DriveFileCrawler:
                 return parent_archive
         return parent_archive
 
-    def get_changes_to_download(self):
+    _get_changes_to_download_obj = namedtuple("get_changes_to_download_obj", 
+        ["sync_decision", "type", "file_id", "name", "md5checksum"])
+    def get_changes_to_download(self, update_token=False):
         """Yields changed files/folders descended from an archived directory.
-        Yields: (int: sync decision, str: file id, str: name, str: md5Checksum)
-            1: int, safe sync
-            -1: int, conflict
+        Yields: an object with the following fields: "sync_decision", "type", "file_id", "name", "md5checksum"
+        sync_decision: SAFE_FLAG: int, safe sync
+                       CONFLICT_FLAG: int, conflict.
+        type: #folder or #file
         """
+        ret_type = self._get_changes_to_download_obj
+
         last_download_change_token = self.conf.data_file.get_last_download_change_token()
         if last_download_change_token == -1:
             last_download_change_token = self.google.get_start_page_token()
@@ -142,12 +156,14 @@ class DriveFileCrawler:
         # local database because it is much faster than querying the API.
 
         changes = self.google.get_changes(start_page_token=last_download_change_token,
-            fields="changes(file(id, name, md5Checksum, modifiedTime, parents))",
+            fields="changes(file(id, name, md5Checksum, modifiedTime, parents, trashed, mimeType))",
             include_removed=False)
 
         last_download_sync_datetime = self.conf.data_file.get_last_download_sync_time(False)
         for change in changes:
             file_change = change["file"]
+            if file_change["trashed"]:
+                continue
             change_datetime = googledrive.convert_google_time_to_datetime(file_change['modifiedTime'])
             parent_id = file_change["parents"][0]  # Assume single parent.
             if change_datetime < last_download_sync_datetime or self.get_parent_archive(parent_id) is None:
@@ -155,34 +171,39 @@ class DriveFileCrawler:
 
             file_id = file_change["id"]
             md5sum = file_change.get("md5Checksum", "")
-            decision = self.is_for_download(file_id, md5sum)
-            if decision != 0:
-                yield decision, file_id, file_change['name'], md5sum
+            decision = self.is_for_download(file_id, md5sum, change_datetime)
+            if decision != self.NEUTRAL_FLAG:
+                _type = "#folder" if (file_change["mimeType"] == self.google.FOLDER_MIMETYPE) else "#file"
+                yield ret_type(decision, _type, file_id, file_change["name"], md5sum)
+
+        if update_token:
+            self.conf.data_file.set_last_download_change_token(self.google.get_start_page_token())
 
     _ids_to_download_in_folder_obj = namedtuple("ids_to_download_in_folder_obj", 
         ["sync_decision", "type", "file_id", "remote_path", "md5checksum"])
     def get_ids_to_download_in_folder(self, folder_id):
-        """ Only yields outdated, missing or conflict files/folders.
+        """Only yields outdated, missing or conflict files/folders.
         Yields: an object with the following fields: "sync_decision", "type", "file_id", "remote_path", "md5checksum"
-        sync_decision: 1: int, safe sync
-                       -1: int, conflict.
+        sync_decision: SAFE_FLAG: int, safe sync
+                       CONFLICT_FLAG: int, conflict.
         type: #folder or #file
         remote path string: e.g. "Backuper\\Folder\\file.py"
         """
         ret_type = DriveFileCrawler._ids_to_download_in_folder_obj
-        for dirpath, dirnames, filenames in self.google.walk_folder(folder_id, fields="files(id, md5Checksum, name)"):
+        for dirpath, dirnames, filenames in self.google.walk_folder(folder_id, fields="files(id, md5Checksum, name, modifiedTime)"):
             path, file_id = dirpath
             md5sum = db.GoogleDriveDB.FOLDER_MD5
             sync_decision = self.is_for_download(file_id, md5sum)
-            if sync_decision != 0:
+            if sync_decision != self.NEUTRAL_FLAG:
                 yield ret_type(sync_decision, "#folder", file_id, path, md5sum)
 
             for resp in filenames:
                 file_id = resp['id']
                 md5sum = resp.get("md5Checksum", db.GoogleDriveDB.FOLDER_MD5)
-                sync_decision = self.is_for_download(file_id, md5sum)
+                change_datetime = googledrive.convert_google_time_to_datetime(resp['modifiedTime'])
+                sync_decision = self.is_for_download(file_id, md5sum, change_datetime)
 
-                if sync_decision != 0:                
+                if sync_decision != self.NEUTRAL_FLAG:                
                     yield ret_type(sync_decision, "#file", file_id, os.path.join(path, resp["name"]), md5sum)
 
     def get_last_removed(self, update_token=True):

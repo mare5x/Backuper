@@ -65,6 +65,6 @@ def test_removed_changes():
 
 if __name__ == "__main__":
     # test_localfilecrawler()
-    # test_drivecrawler_folder("root")
-    # test_drivecrawler_changes("0B94xod46LwqkZENtNWhLMXZ4UzA")
-    test_removed_changes()
+    test_drivecrawler_folder("1fPEdsFWRjHy010hxiZ5Ome-0w70Sn4-v")  # projects/new_backuper
+    test_drivecrawler_changes("0B94xod46LwqkZENtNWhLMXZ4UzA")
+    # test_removed_changes()

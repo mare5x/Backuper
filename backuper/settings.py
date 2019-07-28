@@ -88,7 +88,7 @@ class DataFile(BaseFile):
         self['GoogleDrive'] = {
             'folder_id': '',
             'trees_folder_id': '',
-            'last_backup_date': '',
+            'last_upload_time': '',
             'last_removed_change_token': '',
             'last_download_change_token': '',
             'last_download_sync_time': ''
@@ -121,13 +121,13 @@ class DataFile(BaseFile):
             return googledrive.convert_google_time_to_datetime(raw_time)
         return raw_time
 
-    def set_last_backup_date(self):
-        self['GoogleDrive']['last_backup_date'] = googledrive.convert_datetime_to_google_time(datetime.datetime.utcnow())
+    def set_last_upload_time(self):
+        self['GoogleDrive']['last_upload_time'] = googledrive.convert_datetime_to_google_time(datetime.datetime.utcnow())
 
-    def get_last_backup_date(self, archive=False):
+    def get_last_upload_time(self, archive=False):
         if archive:
-            return googledrive.convert_google_time_to_datetime(self['GoogleDrive']['last_backup_date'])
-        return self['GoogleDrive']['last_backup_date']
+            return googledrive.convert_google_time_to_datetime(self['GoogleDrive']['last_upload_time'])
+        return self['GoogleDrive']['last_upload_time']
 
     def set_blacklisted_paths(self, blacklisted_paths):
         self['Backuper']['blacklisted_paths'] = ";".join(blacklisted_paths)

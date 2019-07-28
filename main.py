@@ -14,12 +14,13 @@ def main(log=True):
         ft.init_log_file(name, overwrite=True, mode="a")
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-lsu", action="store_true", help="List changes that will get uploaded.")
+    parser.add_argument("-lsu", action="store_true", help="List changes that will get uploaded (dry run).")
     parser.add_argument("-uc", action="store_true", help="Upload changes listed by -lsu (see settings.ini).")
     parser.add_argument("-tree", action="store_true", help="Upload 'trees' of directories (see settings.ini).")
     parser.add_argument("-log", action="store_true", help="Create a pretty log file of all I/O operations.")
     parser.add_argument("-lsblacklist", action="store_true", help="List synced files that were removed from Google Drive")
     parser.add_argument("-blacklist", action="store_true", help="Blacklist files listed by -lsblacklist.")
+    parser.add_argument("-lsd", action="store_true", help="List changes that will get downloaded (dry run).")
     args = parser.parse_args()
 
     if not any(vars(args).values()):
@@ -29,6 +30,9 @@ def main(log=True):
     with backuper.Backuper(pretty_log=args.log) as b:
         if args.lsu:
             b.list_upload_changes()
+
+        if args.lsd:
+            b.list_download_changes()
 
         if args.lsblacklist:
             b.list_removed_from_gd()
@@ -45,6 +49,8 @@ def main(log=True):
 if __name__ == "__main__":
     main()
 
+
+# NOTE: performance can be improved with caching.
 
 # Sync Google Photos folder in Google Drive (download it)
 

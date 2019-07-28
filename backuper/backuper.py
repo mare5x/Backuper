@@ -64,9 +64,7 @@ class Backuper:
             self._enqueue_path_changes(dirpath, q)
         gd_uploader.wait_for_queue(q)
 
-    def download_changes(self): pass
-
-    def sync_changes(self): pass
+        self.conf.data_file.set_last_upload_time()
 
     def _upload_folder_structure(self, dirpath, gd_uploader):
         file_crawler = filecrawler.LocalFileCrawler(self.conf)
@@ -77,6 +75,16 @@ class Backuper:
         file_crawler = filecrawler.LocalFileCrawler(self.conf)
         for fpath in file_crawler.get_files_to_sync(dirpath):
             q.put(fpath)
+
+    def list_download_changes(self):
+        crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
+        for obj in crawler.get_changes_to_download(update_token=False):
+            decision = "CONFLICT" if obj.sync_decision == crawler.CONFLICT_FLAG else "SAFE TO DL"
+            print(decision, obj.file_id, self.google.get_remote_path(obj.file_id))
+
+    def download_changes(self): pass
+
+    def sync_changes(self): pass
 
     def download_path_changes(self): pass
 
