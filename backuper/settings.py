@@ -89,7 +89,7 @@ class DataFile(BaseFile):
             'folder_id': '',
             'trees_folder_id': '',
             'last_backup_date': '',
-            'last_change_token': '',
+            'last_removed_change_token': '',
             'last_download_change_token': '',
             'last_download_sync_time': ''
         }
@@ -102,6 +102,13 @@ class DataFile(BaseFile):
 
     def set_last_download_change_token(self, change_id):
         self['GoogleDrive']['last_download_change_token'] = str(change_id)
+
+    def get_last_removed_change_token(self):
+        v = self["GoogleDrive"]["last_removed_change_token"]
+        return int(v) if v else -1
+
+    def set_last_removed_change_token(self, change_id):
+        self['GoogleDrive']['last_removed_change_token'] = str(change_id)
 
     def set_last_download_sync_time(self, sync_time=None):
         if sync_time is None:
@@ -121,13 +128,6 @@ class DataFile(BaseFile):
         if archive:
             return googledrive.convert_google_time_to_datetime(self['GoogleDrive']['last_backup_date'])
         return self['GoogleDrive']['last_backup_date']
-
-    def get_last_change_token(self):
-        v = self["GoogleDrive"]["last_change_token"]
-        return int(v) if v else -1
-
-    def set_last_change_token(self, change_id):
-        self['GoogleDrive']['last_change_token'] = str(change_id)
 
     def set_blacklisted_paths(self, blacklisted_paths):
         self['Backuper']['blacklisted_paths'] = ";".join(blacklisted_paths)
@@ -215,7 +215,7 @@ class Settings:
             return
         if not self.is_blacklisted_parent(entry, self.sync_dirs):
             self.blacklisted_paths.add(entry)
-            logging.info("Added {} to blacklist.".format(entry))
+            logging.info("BLACKLIST ADD: {}.".format(entry))
      
     def clean_blacklisted_paths(self):
         """Cleans the saved blacklisted_paths, so that only the most common valid paths remain."""

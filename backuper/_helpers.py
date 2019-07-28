@@ -1,3 +1,7 @@
+"""
+Various maintenance tools.
+"""
+
 import os
 import concurrent.futures
 import logging
@@ -5,7 +9,7 @@ import time
 
 from tqdm import tqdm
 
-from backuper import database
+from backuper import database, settings
 
 
 def get_unarchived_files_in_google_drive(google, folder_id):
@@ -90,6 +94,28 @@ def delete_removed_from_local(google):
         archive.delete_instance()
     db.close()
 
+def get_blacklisted_archives():
+    SETTINGS_FILE = "_settings.ini"
+    DATA_FILE = "_backuper.ini"
+    conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
+    with database.GoogleDriveDB():
+        for archive in database.DriveArchive.select().iterator():
+            if conf.is_blacklisted_parent(archive.path, conf.sync_dirs):
+                yield archive
+
+def remove_blacklisted_paths(google):
+    """Removes archived blacklisted paths from Google Drive and the database."""
+    
+    print("Deleting blacklisted files from Google Drive ...")
+    
+    db = database.GoogleDriveDB()
+    archives = list(get_blacklisted_archives())
+    for archive in tqdm(archives):
+        google.delete(archive.drive_id)
+        logging.info("Removed {} ({}) from database and/or Google Drive.".format(archive.drive_id, archive.path))
+        archive.delete_instance()
+    db.close()
+
 
 if __name__ == "__main__":
     from backuper import googledrive
@@ -100,4 +126,9 @@ if __name__ == "__main__":
     #     print(archive.path, archive.drive_id)
     logging.basicConfig(filename='logs/_helpers.log', level=logging.INFO)
     # delete_removed_from_local_batched(g)
-    delete_removed_from_local(g)
+    # delete_removed_from_local(g)
+
+    # for archive in get_blacklisted_archives():
+    #     print(archive.path, archive.drive_id)
+    remove_blacklisted_paths(g)
+

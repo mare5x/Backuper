@@ -169,13 +169,39 @@ class DriveFileCrawler:
         type: #folder or #file
         remote path string: e.g. "Backuper\\Folder\\file.py"
         """
-        for file_type, remote_path, response in self.google.walk_folder_builder(folder_id, "", fields="files(id, md5Checksum, name)"):
-            file_id = response['id']
-            md5sum = response.get("md5Checksum", googledrive.GoogleDrive.FOLDER_MIMETYPE)
+        ret_type = DriveFileCrawler._ids_to_download_in_folder_obj
+        for dirpath, dirnames, filenames in self.google.walk_folder(folder_id, fields="files(id, md5Checksum, name)"):
+            path, file_id = dirpath
+            md5sum = db.GoogleDriveDB.FOLDER_MD5
             sync_decision = self.is_for_download(file_id, md5sum)
-
             if sync_decision != 0:
-                if file_type == "#file":
-                    remote_path = os.path.join(remote_path, response['name'])
-                
-                yield DriveFileCrawler._ids_to_download_in_folder_obj(sync_decision, file_type, file_id, remote_path, md5sum)
+                yield ret_type(sync_decision, "#folder", file_id, path, md5sum)
+
+            for resp in filenames:
+                file_id = resp['id']
+                md5sum = resp.get("md5Checksum", db.GoogleDriveDB.FOLDER_MD5)
+                sync_decision = self.is_for_download(file_id, md5sum)
+
+                if sync_decision != 0:                
+                    yield ret_type(sync_decision, "#file", file_id, os.path.join(path, resp["name"]), md5sum)
+
+    def get_last_removed(self, update_token=True):
+        # NOTE: if a folder is removed, only that folder deletion is reported (not the folder contents)!
+
+        conf = self.conf.data_file
+
+        start_token = conf.get_last_removed_change_token()
+        if start_token == -1:
+            start_token = self.google.get_start_page_token()
+
+        changes = self.google.get_changes(start_page_token=start_token,
+            fields="changes(file(name,trashed),fileId,removed)",
+            include_removed=True)
+
+        for change in changes:
+            if change['removed'] or change.get('file', {}).get('trashed'):
+                yield change['fileId']
+
+        if update_token:
+            conf.set_last_removed_change_token(self.google.get_start_page_token())
+

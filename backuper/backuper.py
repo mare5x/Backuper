@@ -82,7 +82,29 @@ class Backuper:
 
     def sync_path_changes(self): pass
 
-    def blacklist_removed_from_gd(self): pass
+    def list_removed_from_gd(self):
+        db = database.GoogleDriveDB()
+        crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
+        for removed_file_id in crawler.get_last_removed(update_token=False):
+            archive = db.get("drive_id", removed_file_id)
+            if archive:
+                print(archive.path, archive.drive_id)
+
+    def blacklist_removed_from_gd(self):
+        # Reason: if a file is removed from GD, we don't want to reupload it.
+        db = database.GoogleDriveDB()
+        crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
+        for removed_file_id in crawler.get_last_removed(update_token=True):
+            archive = db.get("drive_id", removed_file_id)
+            if archive:
+                # If a folder got removed, all children got removed as well.
+                # However, only the root directory needs to be blacklisted.
+                self.conf.blacklist_path(archive.path)
+                model = database.DriveArchive
+                q = model.delete().where(model.path.contains(archive.path))
+                q.execute()
+        self.conf.clean_blacklisted_paths()
+        # TODO: use the database instead of the data file to store the blacklist.
 
     def upload_tree_logs_zip(self):
         zip_path = treelog.create_tree_logs_zip(self.conf, ".")

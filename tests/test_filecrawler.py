@@ -54,8 +54,17 @@ def test_drivecrawler_changes(folder_id):
     conf.exit()
     db.close()
 
+def test_removed_changes():
+    conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
+    crawler = filecrawler.DriveFileCrawler(conf, googledrive.GoogleDrive())
+
+    for change in crawler.get_last_removed(update_token=False):
+        print(change)
+
+    conf.exit()
 
 if __name__ == "__main__":
     # test_localfilecrawler()
-    # test_drivecrawler_folder("15LTuHmHRX49Uy6yH__pGBIoTvF6mCqLa")
-    test_drivecrawler_changes("0B94xod46LwqkZENtNWhLMXZ4UzA")
+    # test_drivecrawler_folder("root")
+    # test_drivecrawler_changes("0B94xod46LwqkZENtNWhLMXZ4UzA")
+    test_removed_changes()

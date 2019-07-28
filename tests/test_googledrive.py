@@ -20,19 +20,24 @@ def test_progress_bar():
         g.print_progress_bar(b, 1, t0, desc="Test:")
 
 def test_changes():
+    import pprint
+
     # token = 820841
     token = g.get_start_page_token()
 
+    print("Start token: ", token)
+
     folder_id = g.upload_directory("tests/")
+    g.delete(folder_id)
 
     changes = g.get_changes(start_page_token=token,
-        fields="changes(file(id, name, mimeType, md5Checksum, modifiedTime))",
-        include_removed=False)
-    
-    for change in changes:
-        print(change)
+        fields="changes(file(id, name, mimeType, md5Checksum, modifiedTime, trashed), fileId, removed)",
+        include_removed=True)
 
-    g.delete(folder_id)
+    for change in changes:
+        pprint.pprint(change)
+
+    print("New token: ", g.get_start_page_token())
 
 def test_file_upload(pretty=False):
     # Upload an empty file. Update it. Upload it. Empty it. Upload it.
@@ -126,10 +131,10 @@ if __name__ == "__main__":
     # g.download_file('1mLmwd_FuxmyKMRLcGWVF8xGumbCSPvu4', "tests/")
     # g.download_folder('0B94xod46LwqkZlVnN2I1VVNCemc', "tests/")
 
-    # test_changes()
+    test_changes()
     # test_file_upload()
     # test_list()
     # test_walk_folder("0B94xod46LwqkSVIyTktCMVV1QWM")
     # test_pretty_print()
     # test_file_upload(True)
-    test_pretty_full()
+    # test_pretty_full()

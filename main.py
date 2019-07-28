@@ -18,6 +18,8 @@ def main(log=True):
     parser.add_argument("-uc", action="store_true", help="Upload changes listed by -lsu (see settings.ini).")
     parser.add_argument("-tree", action="store_true", help="Upload 'trees' of directories (see settings.ini).")
     parser.add_argument("-log", action="store_true", help="Create a pretty log file of all I/O operations.")
+    parser.add_argument("-lsblacklist", action="store_true", help="List synced files that were removed from Google Drive")
+    parser.add_argument("-blacklist", action="store_true", help="Blacklist files listed by -lsblacklist.")
     args = parser.parse_args()
 
     if not any(vars(args).values()):
@@ -27,6 +29,12 @@ def main(log=True):
     with backuper.Backuper(pretty_log=args.log) as b:
         if args.lsu:
             b.list_upload_changes()
+
+        if args.lsblacklist:
+            b.list_removed_from_gd()
+
+        if args.blacklist:
+            b.blacklist_removed_from_gd()
 
         if args.uc:
             b.upload_changes()
