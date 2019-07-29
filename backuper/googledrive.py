@@ -528,7 +528,7 @@ class GoogleDrive:
             if "newStartPageToken" not in fields:
                 fields = "newStartPageToken," + fields
 
-        param = {'fields': fields, 'restrictToMyDrive': True, 'pageSize': 100, 'pageToken': start_page_token, 'includeRemoved': include_removed}
+        param = {'fields': fields, 'restrictToMyDrive': True, 'pageSize': 500, 'pageToken': start_page_token, 'includeRemoved': include_removed}
 
         while page_token is not None:
             if page_token:

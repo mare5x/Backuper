@@ -5,7 +5,7 @@ import concurrent.futures
 
 from pytools import filetools as ft
 
-from . import settings, googledrive, uploader, filecrawler, treelog, database
+from . import settings, googledrive, uploader, downloader, filecrawler, treelog, database
 
 # Guarantee: no files will be deleted from the local file system!
 
@@ -40,12 +40,14 @@ class Backuper:
         database.GoogleDriveDB.close()
 
     def list_upload_changes(self):
+        print("Listing changes to upload ...")
         file_crawler = filecrawler.LocalFileCrawler(self.conf)
         for dirpath in self.conf.sync_dirs:
             for path in file_crawler.get_all_paths_to_sync(dirpath):
                 print(path)
 
     def upload_changes(self):
+        print("Uploading changes ...")
         THREADS = 5
         gd_uploader = uploader.DBDriveUploader(self.conf, self.google)
         # First, the folder structure must be made so that files can be placed
@@ -77,12 +79,55 @@ class Backuper:
             q.put(fpath)
 
     def list_download_changes(self):
+        print("Listing changes to download ...")
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
         for obj in crawler.get_changes_to_download(update_token=False):
             decision = "CONFLICT" if obj.sync_decision == crawler.CONFLICT_FLAG else "SAFE TO DL"
-            print(decision, obj.file_id, self.google.get_remote_path(obj.file_id))
+            print(decision, obj.file_id, obj.remote_path)
 
-    def download_changes(self): pass
+    def download_changes(self):
+        print("Downloading changes ...")
+        THREADS = 8
+        db = database.GoogleDriveDB()
+        crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
+        gd_downloader = downloader.DriveDownloader(self.google)
+        Entry = gd_downloader.DLQEntry
+
+        root_dl_path = self.conf.user_settings_file.get_download_path()
+        root_folder_id = self.conf.get_root_folder_id(self.google)
+        root_path = self.google.get_remote_path(root_folder_id)
+        
+        # Map archived remote paths to local paths.
+        archived_map = dict()
+        for path in self.conf.sync_dirs:
+            archive = db.get("path", path)
+            if archive is None: continue
+            remote_path = self.google.get_remote_path(archive.drive_id)
+            archived_map[remote_path] = archive.path
+        archived_map[root_path] = root_dl_path
+
+        def get_dl_path(remote_path):
+            head, tail = os.path.split(remote_path)
+            while head != root_path:
+                if head in archived_map: break
+                head, tmp = os.path.split(head)
+                tail = os.path.join(tmp, tail)
+            return os.path.join(archived_map[head], tail)
+
+        q = gd_downloader.start_download_queue(n_threads=THREADS)
+        for obj in crawler.get_changes_to_download(root_path, update_token=True):
+            if obj.sync_decision == crawler.CONFLICT_FLAG:
+                print("CONFLICT", obj)
+                continue
+            path = get_dl_path(obj.remote_path)
+            args = { "type": obj.type, "file_id": obj.file_id, "path": path }
+            if obj.type == "#file":
+                path, filename = os.path.split(path)
+                args.update( {'path': path, 'filename': filename, 'md5sum': obj.md5checksum} )
+            q.put(Entry(**args))
+        gd_downloader.wait_for_queue(q)
+
+        self.conf.data_file.set_last_download_sync_time()
 
     def sync_changes(self): pass
 
@@ -90,7 +135,10 @@ class Backuper:
 
     def sync_path_changes(self): pass
 
+    def mirror(self): pass
+
     def list_removed_from_gd(self):
+        print("Listing files removed from Google Drive ...")
         db = database.GoogleDriveDB()
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
         for removed_file_id in crawler.get_last_removed(update_token=False):
@@ -99,6 +147,7 @@ class Backuper:
                 print(archive.path, archive.drive_id)
 
     def blacklist_removed_from_gd(self):
+        print("Blacklisting files removed from Google Drive ...")
         # Reason: if a file is removed from GD, we don't want to reupload it.
         db = database.GoogleDriveDB()
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
@@ -115,9 +164,10 @@ class Backuper:
         # TODO: use the database instead of the data file to store the blacklist.
 
     def upload_tree_logs_zip(self):
+        print("Creating and uploading trees ...")
         zip_path = treelog.create_tree_logs_zip(self.conf, ".")
         gd_uploader = uploader.DriveUploader(self.conf, self.google)
-        root_id = gd_uploader.get_root_folder_id()
+        root_id = self.conf.get_root_folder_id(self.google)
         tree_folder_id = treelog.get_or_create_tree_folder_id(self.conf, self.google, root_id)
         gd_uploader.upload_file(zip_path, folder_id=tree_folder_id)
         ft.remove_file(zip_path)

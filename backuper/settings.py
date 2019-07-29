@@ -69,6 +69,11 @@ class UserSettingsFile(BaseFile):
     def get_paths_in_option(self, option):
         return self.get_unified_paths("Paths", option)
 
+    def get_download_path(self):
+        paths = self.get_paths_in_option("default_download_path")
+        if paths: return paths.pop()
+        return "."
+
 
 class DataFile(BaseFile):
     """Stores application specific information."""
@@ -169,6 +174,13 @@ class Settings:
 
     def exit(self):
         self.data_file.write_to_file()
+
+    def get_root_folder_id(self, google):
+        folder_id = self.data_file.get_root_folder_id()
+        if folder_id is None:
+            folder_id = google.create_folder("Backuper")
+            self.data_file.set_root_folder_id(folder_id)
+        return folder_id
 
     def contains_blacklisted_ext(self, basename):
         for ext in self.blacklisted_extensions:

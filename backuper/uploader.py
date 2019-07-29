@@ -20,22 +20,15 @@ class DriveUploader:
         self.settings = settings
         self.google = google
 
-    def get_root_folder_id(self):
-        folder_id = self.settings.data_file.get_root_folder_id()
-        if folder_id is None:
-            folder_id = self.google.create_folder("Backuper")
-            self.settings.set_root_folder_id(folder_id)
-        return folder_id
-
     def upload_file(self, path, folder_id=None, file_id=None):
         if folder_id is None:
-            folder_id = self.get_root_folder_id()
+            folder_id = self.settings.get_root_folder_id(self.google)
         resp = self.google.upload_file(path, folder_id=folder_id, file_id=file_id)
         return resp['id']
 
     def create_dir(self, path, folder_name=None, parent_folder_id=None):
         if parent_folder_id is None:
-            parent_folder_id = self.get_root_folder_id()
+            parent_folder_id = self.settings.get_root_folder_id(self.google)
         if folder_name is None:
             folder_name = ft.real_case_filename(path)
         return self.google.create_folder(folder_name, parent_id=parent_folder_id)
@@ -81,7 +74,7 @@ class DBDriveUploader(DriveUploader):
     def get_parent_folder_id(self, entry):
         folder_id = db.GoogleDriveDB.get_parent_folder_id(entry)
         if folder_id is None:
-            folder_id = self.get_root_folder_id()
+            folder_id = self.settings.get_root_folder_id(self.google)
         return folder_id
 
     def upload_file(self, path, folder_id=None):

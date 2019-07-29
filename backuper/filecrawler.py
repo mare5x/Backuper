@@ -137,15 +137,21 @@ class DriveFileCrawler:
         return parent_archive
 
     _get_changes_to_download_obj = namedtuple("get_changes_to_download_obj", 
-        ["sync_decision", "type", "file_id", "name", "md5checksum"])
-    def get_changes_to_download(self, update_token=False):
-        """Yields changed files/folders descended from an archived directory.
-        Yields: an object with the following fields: "sync_decision", "type", "file_id", "name", "md5checksum"
+        ["sync_decision", "type", "file_id", "remote_path", "md5checksum"])
+    def get_changes_to_download(self, root_path=None, update_token=False):
+        """Yields changed files/folders descended from the given root path.
+        root_path should be a valid remote path.
+        Yields: an object with the following fields: "sync_decision", "type", "file_id", "remote_path", "md5checksum"
         sync_decision: SAFE_FLAG: int, safe sync
                        CONFLICT_FLAG: int, conflict.
         type: #folder or #file
+        remote path string: e.g. "Backuper\\Folder\\file.py"
         """
         ret_type = self._get_changes_to_download_obj
+
+        if root_path is None:
+            root_folder_id = self.conf.get_root_folder_id(self.google)
+            root_path = self.google.get_remote_path(root_folder_id)
 
         last_download_change_token = self.conf.data_file.get_last_download_change_token()
         if last_download_change_token == -1:
@@ -165,16 +171,20 @@ class DriveFileCrawler:
             if file_change["trashed"]:
                 continue
             change_datetime = googledrive.convert_google_time_to_datetime(file_change['modifiedTime'])
-            parent_id = file_change["parents"][0]  # Assume single parent.
-            if change_datetime < last_download_sync_datetime or self.get_parent_archive(parent_id) is None:
+            if change_datetime < last_download_sync_datetime:
                 continue
 
             file_id = file_change["id"]
+            remote_path = self.google.get_remote_path(file_id)
+
+            if not remote_path.startswith(remote_path):
+                continue
+
             md5sum = file_change.get("md5Checksum", "")
             decision = self.is_for_download(file_id, md5sum, change_datetime)
             if decision != self.NEUTRAL_FLAG:
                 _type = "#folder" if (file_change["mimeType"] == self.google.FOLDER_MIMETYPE) else "#file"
-                yield ret_type(decision, _type, file_id, file_change["name"], md5sum)
+                yield ret_type(decision, _type, file_id, remote_path, md5sum)
 
         if update_token:
             self.conf.data_file.set_last_download_change_token(self.google.get_start_page_token())

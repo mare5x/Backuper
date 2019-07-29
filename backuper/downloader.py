@@ -7,22 +7,22 @@ from . import database as db
 from . import _loader
 
 
-DLQEntry = namedtuple("DLQEntry", ["type", "file_id", "path", "md5sum", "filename"], defaults=['', ''])
-
 class DownloadQueue(_loader._Queue): pass
 
 
 class DriveDownloader:
     """Manages synchronized multi threaded file downloading from Google Drive."""
+    
+    DLQEntry = namedtuple("DLQEntry", ["type", "file_id", "path", "md5sum", "filename"], defaults=['', ''])
 
     def __init__(self, google, update_db=True):
         self.google = google
         self.update_db = update_db
 
     def create_folder(self, folder_id, path):
-        entry = db.unify_path(path)
-        os.makedirs(entry, exist_ok=True)
+        os.makedirs(path, exist_ok=True)
         if self.update_db:
+            entry = db.unify_path(path)
             db.GoogleDriveDB.create_or_update(path=entry, drive_id=folder_id, 
                 date_modified_on_disk=ft.date_modified(entry), md5sum=db.GoogleDriveDB.FOLDER_MD5)
 

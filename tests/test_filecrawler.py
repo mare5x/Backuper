@@ -46,7 +46,7 @@ def test_drivecrawler_changes(folder_id):
     change_date = datetime.datetime(2019, 5, 20)
     change_date = googledrive.convert_datetime_to_google_time(change_date)
     conf.data_file.set_last_download_sync_time(change_date)
-    conf.data_file.set_last_download_change_token(913039)
+    conf.data_file.set_last_download_change_token(989626)
 
     for obj in crawler.get_changes_to_download():
         print(obj)
@@ -65,6 +65,6 @@ def test_removed_changes():
 
 if __name__ == "__main__":
     # test_localfilecrawler()
-    test_drivecrawler_folder("1fPEdsFWRjHy010hxiZ5Ome-0w70Sn4-v")  # projects/new_backuper
+    # test_drivecrawler_folder("1fPEdsFWRjHy010hxiZ5Ome-0w70Sn4-v")  # projects/new_backuper
     test_drivecrawler_changes("0B94xod46LwqkZENtNWhLMXZ4UzA")
     # test_removed_changes()
