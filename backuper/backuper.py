@@ -93,7 +93,7 @@ class Backuper:
         gd_downloader = downloader.DriveDownloader(self.google)
         Entry = gd_downloader.DLQEntry
 
-        root_dl_path = self.conf.user_settings_file.get_download_path()
+        root_dl_path = self.conf.user_settings_file.get_path_in_option("default_download_path")
         root_folder_id = self.conf.get_root_folder_id(self.google)
         root_path = self.google.get_remote_path(root_folder_id)
         
@@ -165,9 +165,17 @@ class Backuper:
 
     def upload_tree_logs_zip(self):
         print("Creating and uploading trees ...")
-        zip_path = treelog.create_tree_logs_zip(self.conf, ".")
+        user_conf = self.conf.user_settings_file
+        keep_local = user_conf.get_bool("tree_keep_local")
+        zip_dir_path = user_conf.get_path_in_option("tree_keep_path") if keep_local else "."
+
+        zip_path = treelog.create_tree_logs_zip(self.conf, zip_dir_path)
         gd_uploader = uploader.DriveUploader(self.conf, self.google)
         root_id = self.conf.get_root_folder_id(self.google)
         tree_folder_id = treelog.get_or_create_tree_folder_id(self.conf, self.google, root_id)
         gd_uploader.upload_file(zip_path, folder_id=tree_folder_id)
-        ft.remove_file(zip_path)
+        
+        if not keep_local:
+            ft.remove_file(zip_path)
+        else:
+            print(zip_path)

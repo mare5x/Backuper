@@ -157,9 +157,21 @@ class DriveFileCrawler:
         if last_download_change_token == -1:
             last_download_change_token = self.google.get_start_page_token()
 
+        # Ignore the trees folder ...
+        blacklisted_remote_paths = set()
+        tmp = self.conf.data_file.get_trees_folder_id()
+        if tmp: blacklisted_remote_paths.add(self.google.get_remote_path(tmp))
+        
+        def is_valid_path(remote_path):
+            if not remote_path.startswith(root_path): return False
+            for path in blacklisted_remote_paths:
+                if remote_path.startswith(path): return False
+            return True
+
         # Note: it is important to check the parent of each changed file because the listed
-        # changes are global (from any folder in My Drive). We do parent checking using the
-        # local database because it is much faster than querying the API.
+        # changes are global (from any folder in My Drive). Remote paths are used because
+        # they are "fast" and work for un-archived folders. However, multiple folders 
+        # can share the same remote path (bad).
 
         changes = self.google.get_changes(start_page_token=last_download_change_token,
             fields="changes(file(id, name, md5Checksum, modifiedTime, parents, trashed, mimeType))",
@@ -173,13 +185,10 @@ class DriveFileCrawler:
             change_datetime = googledrive.convert_google_time_to_datetime(file_change['modifiedTime'])
             if change_datetime < last_download_sync_datetime:
                 continue
-
             file_id = file_change["id"]
             remote_path = self.google.get_remote_path(file_id)
-
-            if not remote_path.startswith(remote_path):
+            if not is_valid_path(remote_path): 
                 continue
-
             md5sum = file_change.get("md5Checksum", "")
             decision = self.is_for_download(file_id, md5sum, change_datetime)
             if decision != self.NEUTRAL_FLAG:

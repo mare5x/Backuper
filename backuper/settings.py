@@ -10,6 +10,7 @@ from pytools import filetools as ft
 
 
 ENCODING = "UTF-8"
+SEP = ";"
 
 
 class BaseFile(configparser.ConfigParser):
@@ -49,31 +50,63 @@ class UserSettingsFile(BaseFile):
         super().__init__(file_path)
 
         if not self.read(self.file_path, encoding=ENCODING):
-            self.make_layout()
-            self.write_to_file()
+            self.init_file(self.file_path)
 
-    def make_layout(self):
-        self['Paths'] = {
-            'log_paths_full': '',
-            'log_dirs_only': '',
-            'sync_dirs': '',
-            'blacklisted': '',
-            'default_download_path': ''
-        }
+    def init_file(self, path):
+        import textwrap
+        s = """\
+        [Settings]
+        # Options with multiple values should be seperated using ';'.
+        # Seperated values can span multiple lines.
+        # E.g.
+        # sync_dirs = 
+        #   /this/path;
+        #   /and/this/path;
+        
+        # Directory paths to sync.
+        sync_dirs = 
+        
+        # Where to download new/changed files (those not a part of 
+        # a synced directory).
+        default_download_path = ./downloads/
+        
+        # These paths (files or directories) won't get synced.
+        blacklisted_paths = 
+        
+        # Files/directories with these extensions won't get synced.
+        blacklisted_extensions = 
+        
+        # Files/directories with these names won't get synced.
+        blacklisted_names = 
 
-        self['Settings'] = {
-            'blacklisted_extensions': '',
-            'blacklisted_names': ''
-        }
+        # Generate a tree log of the given directories, including files.
+        tree_with_files = 
+        
+        # Generate a tree log of the given directories, without files.
+        tree_dirs = 
+        
+        # Keep tree zip?
+        tree_keep_local = true
+        
+        # Where to keep the tree zip if 'tree_keep_local' is true.
+        tree_keep_path = ./trees/
+        """
+        s = textwrap.dedent(s)
+        # Write a pretty representation to file, because
+        # using configparser's methods would remove formatting (and comments).
+        with open(path, "w", encoding=ENCODING) as f:
+            f.write(s)
+        self.read_string(s)  # parse
 
     def get_paths_in_option(self, option):
-        return self.get_unified_paths("Paths", option)
+        return self.get_unified_paths("Settings", option)
 
-    def get_download_path(self):
-        paths = self.get_paths_in_option("default_download_path")
-        if paths: return paths.pop()
-        return "."
-
+    def get_path_in_option(self, option, fallback="."):
+        path = self.get("Settings", option, fallback=fallback).strip(SEP)
+        return db.unify_path(path)
+    
+    def get_bool(self, option):
+        return self.getboolean("Settings", option)
 
 class DataFile(BaseFile):
     """Stores application specific information."""
@@ -161,7 +194,7 @@ class Settings:
         self.blacklisted_paths = self.data_file.get_unified_paths("Backuper", "blacklisted_paths")
         self.blacklisted_extensions = self.user_settings_file.get_unified_values('Settings', 'blacklisted_extensions')
         self.blacklisted_names = self.user_settings_file.get_unified_values('Settings', 'blacklisted_names')
-        user_blacklist = self.user_settings_file.get_paths_in_option("blacklisted")
+        user_blacklist = self.user_settings_file.get_paths_in_option("blacklisted_paths")
         self.blacklisted_paths.update(user_blacklist)
 
         self.sync_dirs = self.user_settings_file.get_paths_in_option("sync_dirs")

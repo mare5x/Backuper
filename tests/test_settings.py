@@ -30,6 +30,7 @@ def print_settings():
 
 if __name__ == '__main__':
     print_settings()
-    print_unified_paths(conf.user_settings_file, "Paths", "tree_with_files")
-    print_unified_paths(conf.user_settings_file, "Paths", "sync_dirs")
+    print_unified_paths(conf.user_settings_file, "Settings", "tree_with_files")
+    print_unified_paths(conf.user_settings_file, "Settings", "sync_dirs")
+    print(conf.user_settings_file.get_path_in_option("default_download_path"))
     conf.exit()
