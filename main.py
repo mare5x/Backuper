@@ -21,6 +21,8 @@ def main(log=True):
     parser.add_argument("-lsr", nargs='?', const="list", choices=["list", "blacklist", "remove"], help="List synced files that were removed from Google Drive.")
     parser.add_argument("-lsd", action="store_true", help="List changes that will get downloaded (dry run).")
     parser.add_argument("-dc", action="store_true", help="Download changes listed by -lsd.")
+    parser.add_argument("-lsffs", nargs=2, help="Fully sync folder_id with local_path (dry run).", metavar=("FOLDER_ID", "LOCAL_PATH"))
+    parser.add_argument("-ffs", nargs=2, help="Fully sync folder_id with local_path (-lsffs).", metavar=("FOLDER_ID", "LOCAL_PATH"))
     args = parser.parse_args()
 
     if not any(vars(args).values()):
@@ -32,7 +34,7 @@ def main(log=True):
             b.list_upload_changes()
 
         if args.lsd:
-            b.list_download_changes()
+            b.download_changes(dry_run=True)
 
         if args.lsr:
             opt = args.lsr
@@ -42,6 +44,12 @@ def main(log=True):
                 b.blacklist_removed_from_gd()
             elif opt == "remove":
                 b.remove_db_removed_from_gd()
+
+        if args.lsffs:
+            b.full_folder_sync(args.lsffs[0], args.lsffs[1], dry_run=True)
+        
+        if args.ffs:
+            b.full_folder_sync(args.ffs[0], args.ffs[1], dry_run=False)
 
         if args.uc:
             b.upload_changes()

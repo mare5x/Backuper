@@ -63,7 +63,7 @@ class UserSettingsFile(BaseFile):
         #   /this/path;
         #   /and/this/path;
         
-        # Directory paths to sync.
+        # These local directory paths will be synced with /My Drive/Backuper/[...].
         sync_dirs = 
         
         # Where to download new/changed files (those not a part of 

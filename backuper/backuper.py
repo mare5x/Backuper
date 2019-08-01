@@ -79,15 +79,8 @@ class Backuper:
         for fpath in file_crawler.get_files_to_sync(dirpath):
             q.put(fpath)
 
-    def list_download_changes(self):
-        print("Listing changes to download ...")
-        crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
-        for obj in crawler.get_changes_to_download(update_token=False):
-            decision = "CONFLICT" if obj.sync_decision == crawler.CONFLICT_FLAG else "SAFE TO DL"
-            print(decision, obj.file_id, obj.remote_path)
-
-    def download_changes(self):
-        print("Downloading changes ...")
+    def download_changes(self, dry_run=False):
+        print("Downloading changes ..." + (" (dry)" if dry_run else ""))
         THREADS = 8
         db = database.GoogleDriveDB()
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
@@ -98,25 +91,25 @@ class Backuper:
         root_folder_id = self.conf.get_root_folder_id(self.google)
         root_path = self.google.get_remote_path(root_folder_id)
         
-        # Map archived remote paths to local paths.
-        archived_map = dict()
+        # Map tracked remote paths to local paths.
+        tracked_map = dict()
         for path in self.conf.sync_dirs:
             archive = db.get("path", path)
             if archive is None: continue
             remote_path = self.google.get_remote_path(archive.drive_id)
-            archived_map[remote_path] = archive.path
-        archived_map[root_path] = root_dl_path
+            tracked_map[remote_path] = archive.path
+        tracked_map[root_path] = root_dl_path
 
         def get_dl_path(remote_path):
             head, tail = os.path.split(remote_path)
             while head != root_path:
-                if head in archived_map: break
+                if head in tracked_map: break
                 head, tmp = os.path.split(head)
                 tail = os.path.join(tmp, tail)
-            return os.path.join(archived_map[head], tail)
+            return os.path.join(tracked_map[head], tail)
 
         q = gd_downloader.start_download_queue(n_threads=THREADS)
-        for obj in crawler.get_changes_to_download(root_path, update_token=True):
+        for obj in crawler.get_changes_to_download(root_path, update_token=(not dry_run)):
             if obj.sync_decision == crawler.CONFLICT_FLAG:
                 print("CONFLICT", obj)
                 continue
@@ -125,10 +118,13 @@ class Backuper:
             if obj.type == "#file":
                 path, filename = os.path.split(path)
                 args.update( {'path': path, 'filename': filename, 'md5sum': obj.md5checksum} )
-            q.put(Entry(**args))
+            
+            if dry_run: pprint.pprint(args)
+            else: q.put(Entry(**args))
         gd_downloader.wait_for_queue(q)
 
-        self.conf.data_file.set_last_download_sync_time()
+        if not dry_run:
+            self.conf.data_file.set_last_download_sync_time()
 
     def sync_changes(self): pass
 
@@ -137,6 +133,60 @@ class Backuper:
     def sync_path_changes(self): pass
 
     def mirror(self): pass
+
+    def full_upload_sync(self, folder_id, local_path, dry_run=False):
+        if not os.path.exists(local_path): return
+
+        gd_uploader = uploader.DBDriveUploader(self.google, folder_id)
+        file_crawler = filecrawler.LocalFileCrawler(self.conf)
+        
+        # Link folder_id and local_path manually, so that no new base folder
+        # is created inside folder_id.
+        entry = database.unify_path(local_path)
+        _db = database.GoogleDriveDB
+        _db.create_or_update(path=entry, drive_id=folder_id, 
+            date_modified_on_disk=ft.date_modified(entry), md5sum=_db.FOLDER_MD5)
+
+        for folder in file_crawler.get_folders_to_sync(local_path):
+            if dry_run: print(folder)
+            else: gd_uploader.create_dir(folder)
+
+        q = gd_uploader.start_upload_queue()
+        for fpath in file_crawler.get_files_to_sync(local_path):
+            if dry_run: print(fpath)
+            else: q.put(fpath)
+        gd_uploader.wait_for_queue(q)
+
+    def full_download_sync(self, folder_id, local_path, dry_run=False):
+        gd_downloader = downloader.DriveDownloader(self.google)
+        crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
+        Entry = gd_downloader.DLQEntry
+        
+        q = gd_downloader.start_download_queue()
+        for obj in crawler.get_ids_to_download_in_folder(folder_id):
+            # Get rid of the folder name prefix, so that local_path is the 
+            # destination folder of items inside folder_id.
+            remote_path = obj.remote_path.split(os.path.sep, 1)[1] if os.path.sep in obj.remote_path else ""
+            dl_path = os.path.join(local_path, remote_path)
+            if obj.sync_decision == crawler.CONFLICT_FLAG or os.path.exists(dl_path):
+                print("CONFLICT", obj)
+                continue
+            args = { "type": obj.type, "file_id": obj.file_id, "path": dl_path }
+            if obj.type == "#file":
+                path, filename = os.path.split(dl_path)
+                args.update( {'path': path, 'filename': filename, 'md5sum': obj.md5checksum} )
+            
+            if dry_run:
+                pprint.pprint(args)
+            else:
+                q.put(Entry(**args))
+
+        gd_downloader.wait_for_queue(q)
+
+    def full_folder_sync(self, folder_id, local_path, dry_run=False):
+        print("Fully syncing: {} <=> {} ...".format(folder_id, local_path) + (" (dry)" if dry_run else ""))
+        self.full_upload_sync(folder_id, local_path, dry_run=dry_run)
+        self.full_download_sync(folder_id, local_path, dry_run=dry_run)
 
     def get_removed_from_gd(self, update_token):
         db = database.GoogleDriveDB()
