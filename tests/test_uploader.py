@@ -18,7 +18,7 @@ def db_upload_test(path):
     google = googledrive.GoogleDrive()
     file_crawler = filecrawler.LocalFileCrawler(conf)
 
-    drive_uploader = uploader.DBDriveUploader(conf, google, update_db=True)
+    drive_uploader = uploader.DBDriveUploader(google, update_db=True)
     folder_id = make_folder_structure(path, drive_uploader, file_crawler)
 
     q = drive_uploader.start_upload_queue(n_threads=4)
@@ -37,9 +37,8 @@ def db_upload_test(path):
     db.close()
 
 def upload_test(path):
-    conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
     google = googledrive.PPGoogleDrive(filename="tests/test.txt")
-    ul = uploader.DriveUploader(conf, google)
+    ul = uploader.DriveUploader(google)
 
     folder_id = ul.create_dir(path, folder_name="BackuperUploadTest", parent_folder_id="root")
     q = ul.start_upload_queue()
@@ -53,7 +52,6 @@ def upload_test(path):
         google.delete(folder_id)
 
         google.exit()
-        conf.exit()
 
 if __name__ == "__main__":
     # db_upload_test("tests/")

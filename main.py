@@ -18,8 +18,7 @@ def main(log=True):
     parser.add_argument("-uc", action="store_true", help="Upload changes listed by -lsu (see settings.ini).")
     parser.add_argument("-tree", action="store_true", help="Upload 'trees' of directories (see settings.ini).")
     parser.add_argument("-log", action="store_true", help="Create a pretty log file of all I/O operations.")
-    parser.add_argument("-lsr", action="store_true", help="List synced files that were removed from Google Drive.")
-    parser.add_argument("-blr", action="store_true", help="Blacklist files listed by -lsr.")
+    parser.add_argument("-lsr", nargs='?', const="list", choices=["list", "blacklist", "remove"], help="List synced files that were removed from Google Drive.")
     parser.add_argument("-lsd", action="store_true", help="List changes that will get downloaded (dry run).")
     parser.add_argument("-dc", action="store_true", help="Download changes listed by -lsd.")
     args = parser.parse_args()
@@ -36,10 +35,13 @@ def main(log=True):
             b.list_download_changes()
 
         if args.lsr:
-            b.list_removed_from_gd()
-
-        if args.blr:
-            b.blacklist_removed_from_gd()
+            opt = args.lsr
+            if opt == "list":
+                b.list_removed_from_gd()
+            elif opt == "blacklist":
+                b.blacklist_removed_from_gd()
+            elif opt == "remove":
+                b.remove_db_removed_from_gd()
 
         if args.uc:
             b.upload_changes()

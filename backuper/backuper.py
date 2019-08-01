@@ -1,6 +1,7 @@
 import os
 import tempfile
 import logging
+import pprint
 import concurrent.futures
 
 from pytools import filetools as ft
@@ -49,7 +50,7 @@ class Backuper:
     def upload_changes(self):
         print("Uploading changes ...")
         THREADS = 5
-        gd_uploader = uploader.DBDriveUploader(self.conf, self.google)
+        gd_uploader = uploader.DBDriveUploader(self.google, self.conf.get_root_folder_id(self.google))
         # First, the folder structure must be made so that files can be placed
         # in the correct directories. This can't be queued because the order is 
         # important.
@@ -137,31 +138,42 @@ class Backuper:
 
     def mirror(self): pass
 
-    def list_removed_from_gd(self):
-        print("Listing files removed from Google Drive ...")
+    def get_removed_from_gd(self, update_token):
         db = database.GoogleDriveDB()
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
-        for removed_file_id in crawler.get_last_removed(update_token=False):
+        for removed_file_id in crawler.get_last_removed(update_token=update_token):
             archive = db.get("drive_id", removed_file_id)
             if archive:
-                print(archive.path, archive.drive_id)
+                yield archive
+
+    def list_removed_from_gd(self):
+        print("Listing files removed from Google Drive ...")
+        for archive in self.get_removed_from_gd(False):
+            print(archive.path, archive.drive_id)
 
     def blacklist_removed_from_gd(self):
         print("Blacklisting files removed from Google Drive ...")
         # Reason: if a file is removed from GD, we don't want to reupload it.
-        db = database.GoogleDriveDB()
-        crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
-        for removed_file_id in crawler.get_last_removed(update_token=True):
-            archive = db.get("drive_id", removed_file_id)
-            if archive:
-                # If a folder got removed, all children got removed as well.
-                # However, only the root directory needs to be blacklisted.
-                self.conf.blacklist_path(archive.path)
-                model = database.DriveArchive
-                q = model.delete().where(model.path.contains(archive.path))
-                q.execute()
+        for archive in self.get_removed_from_gd(True):
+            print(archive.path, archive.drive_id)
+            # If a folder got removed, all children got removed as well.
+            # However, only the root directory needs to be blacklisted.
+            self.conf.blacklist_path(archive.path)
+            model = database.DriveArchive
+            q = model.delete().where(model.path.contains(archive.path))
+            q.execute()
         self.conf.clean_blacklisted_paths()
         # TODO: use the database instead of the data file to store the blacklist.
+
+    def remove_db_removed_from_gd(self):
+        print("Removing files removed from Google Drive from the database ...")
+        for archive in self.get_removed_from_gd(True):
+            print(archive.path, archive.drive_id)
+            # If a folder got removed, all children got removed as well.
+            self.conf.blacklist_path(archive.path)
+            model = database.DriveArchive
+            q = model.delete().where(model.path.contains(archive.path))
+            q.execute()
 
     def upload_tree_logs_zip(self):
         print("Creating and uploading trees ...")
@@ -170,7 +182,7 @@ class Backuper:
         zip_dir_path = user_conf.get_path_in_option("tree_keep_path") if keep_local else "."
 
         zip_path = treelog.create_tree_logs_zip(self.conf, zip_dir_path)
-        gd_uploader = uploader.DriveUploader(self.conf, self.google)
+        gd_uploader = uploader.DriveUploader(self.google)
         root_id = self.conf.get_root_folder_id(self.google)
         tree_folder_id = treelog.get_or_create_tree_folder_id(self.conf, self.google, root_id)
         gd_uploader.upload_file(zip_path, folder_id=tree_folder_id)

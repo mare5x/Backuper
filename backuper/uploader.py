@@ -16,21 +16,18 @@ class DriveUploader:
     # folder_id [None] and file_id [None] are optional fields.
     DUQEntry = namedtuple("DUQEntry", ["path", "folder_id", "file_id"], defaults=[None, None])
 
-    def __init__(self, settings, google):
-        self.settings = settings
+    def __init__(self, google, root_folder_id='root'):
         self.google = google
+        self.root_folder_id = root_folder_id
 
     def upload_file(self, path, folder_id=None, file_id=None):
-        if folder_id is None:
-            folder_id = self.settings.get_root_folder_id(self.google)
+        folder_id = folder_id or self.root_folder_id
         resp = self.google.upload_file(path, folder_id=folder_id, file_id=file_id)
         return resp['id']
 
     def create_dir(self, path, folder_name=None, parent_folder_id=None):
-        if parent_folder_id is None:
-            parent_folder_id = self.settings.get_root_folder_id(self.google)
-        if folder_name is None:
-            folder_name = ft.real_case_filename(path)
+        parent_folder_id = parent_folder_id or self.root_folder_id
+        folder_name = folder_name or ft.real_case_filename(path)
         return self.google.create_folder(folder_name, parent_id=parent_folder_id)
 
     def start_upload_queue(self, n_threads=5):
@@ -67,15 +64,13 @@ class DBDriveUploader(DriveUploader):
     # Override. The entries are simple paths.
     DUQEntry = str 
 
-    def __init__(self, google, settings, update_db=True):
-        super().__init__(google, settings)
+    def __init__(self, google, root_folder_id, update_db=True):
+        super().__init__(google, root_folder_id)
         self.update_db = update_db
 
     def get_parent_folder_id(self, entry):
-        folder_id = db.GoogleDriveDB.get_parent_folder_id(entry)
-        if folder_id is None:
-            folder_id = self.settings.get_root_folder_id(self.google)
-        return folder_id
+        folder_id = db.GoogleDriveDB.get_parent_folder_id(entry, fallback=None)
+        return folder_id if folder_id else self.root_folder_id
 
     def upload_file(self, path, folder_id=None):
         entry = db.unify_path(path)
