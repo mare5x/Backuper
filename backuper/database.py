@@ -29,6 +29,8 @@ class GoogleDriveDB:
     """Manages the archive (database) used for Google Drive."""
 
     FOLDER_MD5 = ""  # Shared md5 checksum for folders.
+    
+    model = DriveArchive
 
     def __init__(self):
         GoogleDriveDB.init()
@@ -40,12 +42,12 @@ class GoogleDriveDB:
         GoogleDriveDB.close()
 
     def __iter__(self):
-        return DriveArchive.select().iterator()
+        return GoogleDriveDB.model.select().iterator()
 
     @staticmethod
     def init():
         db.connect(reuse_if_open=True)
-        db.create_tables([DriveArchive], safe=True)
+        db.create_tables([GoogleDriveDB.model], safe=True)
 
     @staticmethod
     def close():
@@ -53,16 +55,16 @@ class GoogleDriveDB:
 
     @staticmethod
     def get(field, key, fallback=None):
-        query = getattr(DriveArchive, field) == key
+        query = getattr(GoogleDriveDB.model, field) == key
         try:
-            return DriveArchive.get(query)
-        except DriveArchive.DoesNotExist:
+            return GoogleDriveDB.model.get(query)
+        except GoogleDriveDB.model.DoesNotExist:
             return fallback
 
     @staticmethod
     def create(*args, **kwargs):
         with db.atomic():
-            return DriveArchive.create(*args, **kwargs)
+            return GoogleDriveDB.model.create(*args, **kwargs)
 
     @staticmethod
     def remove(field, key):
@@ -86,7 +88,7 @@ class GoogleDriveDB:
             if field in kwargs:
                 get[field] = kwargs.pop(field)
 
-        model, created = DriveArchive.get_or_create(**get, defaults=kwargs)
+        model, created = GoogleDriveDB.model.get_or_create(**get, defaults=kwargs)
         if not created:
             GoogleDriveDB.update(model, **kwargs)
         return model

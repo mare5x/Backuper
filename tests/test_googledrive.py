@@ -2,6 +2,7 @@ import sys
 import os
 import tempfile
 import time
+import pprint
 
 from pytools import printer, filetools
 
@@ -74,6 +75,9 @@ def test_list():
     for r in g.get_folders_in_folder('root'):
         print(r)
 
+    for resp in g.list_all(fields="files(id,name)", q="modifiedTime > '2019-08-01T12:00:00'"):
+        pprint.pprint(resp)
+
 def test_walk_folder(folder_id):
     for dirpath, dirnames, filenames in g.walk_folder(folder_id, fields="files(id, md5Checksum, name)"):
         print(dirpath, dirnames, filenames)
@@ -131,9 +135,9 @@ if __name__ == "__main__":
     # g.download_file('1mLmwd_FuxmyKMRLcGWVF8xGumbCSPvu4', "tests/")
     # g.download_folder('0B94xod46LwqkZlVnN2I1VVNCemc', "tests/")
 
-    test_changes()
+    # test_changes()
     # test_file_upload()
-    # test_list()
+    test_list()
     # test_walk_folder("0B94xod46LwqkSVIyTktCMVV1QWM")
     # test_pretty_print()
     # test_file_upload(True)

@@ -18,7 +18,6 @@ import mimetypes
 import concurrent.futures
 from functools import wraps
 
-from .sharedtools import uploading_to
 from pytools import filetools as ft
 from pytools import printer, cache
 
@@ -65,46 +64,6 @@ def handle_http_error(silent=False, ignore=False):
                 
         return inner_decorated
     return decorated
-    
-    
-# class handle_http_error(ContextDecorator):
-#     def __init__(self, silent=False, ignore=False):
-#         self._suppress = suppress
-#         self._silent = silent
-
-#     def __enter__(self):
-#         pass
-
-#     def __exit__(self, exctype, excinst, exctb):
-#         if exctype is HttpError:
-#             logging.error(str(excinst))
-
-#             if self._suppress:
-#                 return True
-
-#             if excinst.resp.status == 404:  # error 404 -> ignore (file is missing etc ...)
-#                 return True
-
-#             if excinst.resp.status in RETRYABLE_HTTP_ERROR_CODES:
-#                 for retry in range(NUM_RETRIES):
-#                     if handle_progressless_attempt(error, retry, retries=NUM_RETRIES):
-#                         if self._silent:
-#                             return True
-
-
-_batch_error_counter = 0
-def _batch_error_suppressor(request_id, response, exception):
-    global _batch_error_counter
-    if exception:
-        logging.error(str(exception))
-        print('counter: {}, error: {}'.format(_batch_error_counter, exception.resp.status))
-        if exception.resp.status == 403:  # user limit reached -> exponential backoff
-            _batch_error_counter += 1
-            return handle_progressless_attempt(exception, _batch_error_counter, retries=NUM_RETRIES)
-        else:
-            _batch_error_counter = 0
-    else:
-        _batch_error_counter = 0
 
 
 def convert_google_time_to_datetime(google_time):
@@ -204,8 +163,12 @@ class GoogleDrive:
         fields = self.add_to_fields(fields, "files(id,name)")
         dirpath = os.path.join(dirpath, dirname)
 
-        dirs = list(self.get_folders_in_folder(folder_id, fields=fields))
-        files = list(self.get_files_in_folder(folder_id, fields=fields, q=q))
+        # It's faster to make fewer API requests ...
+        dirs = []
+        files = []
+        for ftype, resp in self.get_all_in_folder(folder_id, fields=fields, q=q):
+            if ftype == "#file": files.append(resp)
+            else: dirs.append(resp)
 
         yield (dirpath, folder_id), dirs, files
 
@@ -369,6 +332,27 @@ class GoogleDrive:
     def get_file_by_name(self, name, fields="files(id, name, parents)"):
         return self.drive_service.files().list(q="name='{}'".format(name), fields=fields).execute()["files"]
 
+    def get_all_in_folder(self, folder_id, fields="files(trashed,id,name", q=None):
+        """Yields all (non-trashed) files in a folder (direct children) with fields metadata.
+        Yields: (#file or #folder, resp) pairs."""
+        
+        fields = self.add_to_fields(fields, 'files(trashed,id,mimeType),nextPageToken')
+        search_query = "'{folder_id}' in parents".format(folder_id=folder_id)
+        if q:
+            search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
+
+        request = self.drive_service.files().list(q=search_query, fields=fields, pageSize=500)
+        while request is not None:
+            response = request.execute()
+
+            for file in response['files']:
+                if not file['trashed']:
+                    file.pop('trashed')
+                    _type = "#folder" if file["mimeType"] == self.FOLDER_MIMETYPE else "#file"
+                    yield (_type, file)
+
+            request = self.drive_service.files().list_next(request, response)
+
     def get_files_in_folder(self, folder_id, fields="files(trashed, id, name)", q=None):
         """Yields all (non-trashed) files in a folder (direct children) with fields metadata. 
         Doesn't include folders."""
@@ -378,7 +362,7 @@ class GoogleDrive:
         if q:
             search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
 
-        request = self.drive_service.files().list(q=search_query, fields=fields)
+        request = self.drive_service.files().list(q=search_query, fields=fields, pageSize=500)
         while request is not None:
             response = request.execute()
 
@@ -397,7 +381,7 @@ class GoogleDrive:
         if q:
             search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
 
-        request = self.drive_service.files().list(q=search_query, fields=fields)
+        request = self.drive_service.files().list(q=search_query, fields=fields, pageSize=500)
         while request is not None:
             response = request.execute()
 
@@ -498,9 +482,10 @@ class GoogleDrive:
     def delete(self, file_id):
         try:
             self.drive_service.files().delete(fileId=file_id).execute()
+            logging.info("GD DELETE: %s", file_id)
         except HttpError as e:
             if e.resp.status == 404:  # File doesn't exist. Safe to ignore.
-                logging.warning("GD IGNORING: " + repr(e))
+                logging.warning("GD DELETE: IGNORING " + repr(e))
             else:
                 raise e
 

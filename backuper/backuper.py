@@ -6,7 +6,7 @@ import concurrent.futures
 
 from pytools import filetools as ft
 
-from . import settings, googledrive, uploader, downloader, filecrawler, treelog, database
+from . import settings, googledrive, uploader, downloader, filecrawler, treelog, database, _helpers
 
 # Guarantee: no files will be deleted from the local file system!
 
@@ -132,10 +132,39 @@ class Backuper:
 
     def sync_path_changes(self): pass
 
-    def mirror(self): pass
+    def mirror(self, path, folder_id=None, fast=False, dry_run=False):
+        """Mirror a local path onto Google Drive.
+        If fast, only the database will be mirrored. Non-archived files on GD 
+        will remain. Otherwise, the mirror will be fully representative of
+        the local path.
+        """
+        db = database.GoogleDriveDB()
+        if folder_id is None:
+            entry = database.unify_path(path)
+            archive = db.get("path", entry)
+            if not archive: 
+                return
+            folder_id = archive.drive_id
+
+        print("Mirror {} => {} ...".format(path, folder_id) + (" (dry)" if dry_run else ""))
+
+        if fast:
+            _helpers.delete_removed_from_local_db(self.google, path, dry_run=dry_run)
+        else:
+            # It would be much faster to just list all files newer than a given age
+            # and check if they are in the correct folder ...
+            _helpers.delete_nonlocal_in_gd(self.google, folder_id, dry_run=dry_run)
+        self.full_upload_sync(folder_id, path, dry_run=dry_run)
+
+    def mirror_all(self, fast=False, dry_run=False):
+        # Performance idea: use a UFDS (union find disjoint set).
+        for path in self.conf.sync_dirs:
+            self.mirror(path, fast=fast, dry_run=dry_run)
 
     def full_upload_sync(self, folder_id, local_path, dry_run=False):
         if not os.path.exists(local_path): return
+
+        print("Full upload sync {} => {} ...".format(local_path, folder_id) + (" (dry)" if dry_run else ""))
 
         gd_uploader = uploader.DBDriveUploader(self.google, folder_id)
         file_crawler = filecrawler.LocalFileCrawler(self.conf)
@@ -158,6 +187,8 @@ class Backuper:
         gd_uploader.wait_for_queue(q)
 
     def full_download_sync(self, folder_id, local_path, dry_run=False):
+        print("Full download sync {} => {} ...".format(folder_id, local_path) + (" (dry)" if dry_run else ""))
+
         gd_downloader = downloader.DriveDownloader(self.google)
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
         Entry = gd_downloader.DLQEntry
@@ -209,7 +240,7 @@ class Backuper:
             # If a folder got removed, all children got removed as well.
             # However, only the root directory needs to be blacklisted.
             self.conf.blacklist_path(archive.path)
-            model = database.DriveArchive
+            model = database.GoogleDriveDB.model
             q = model.delete().where(model.path.contains(archive.path))
             q.execute()
         self.conf.clean_blacklisted_paths()
@@ -221,7 +252,7 @@ class Backuper:
             print(archive.path, archive.drive_id)
             # If a folder got removed, all children got removed as well.
             self.conf.blacklist_path(archive.path)
-            model = database.DriveArchive
+            model = database.GoogleDriveDB.model
             q = model.delete().where(model.path.contains(archive.path))
             q.execute()
 

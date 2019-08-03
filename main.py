@@ -23,6 +23,8 @@ def main(log=True):
     parser.add_argument("-dc", action="store_true", help="Download changes listed by -lsd.")
     parser.add_argument("-lsffs", nargs=2, help="Fully sync folder_id with local_path (dry run).", metavar=("FOLDER_ID", "LOCAL_PATH"))
     parser.add_argument("-ffs", nargs=2, help="Fully sync folder_id with local_path (-lsffs).", metavar=("FOLDER_ID", "LOCAL_PATH"))
+    parser.add_argument("-mir", nargs='?', const="fast", choices=["full", "fast"],  help="Mirror all sync_dirs (settings.ini) on Google Drive.")
+    parser.add_argument("-lsmir", nargs='?', const="fast", choices=["full", "fast"], help="Mirror all sync_dirs (settings.ini) on Google Drive (dry run).")
     args = parser.parse_args()
 
     if not any(vars(args).values()):
@@ -44,6 +46,12 @@ def main(log=True):
                 b.blacklist_removed_from_gd()
             elif opt == "remove":
                 b.remove_db_removed_from_gd()
+
+        if args.lsmir:
+            b.mirror_all(fast=(args.lsmir == "fast"), dry_run=True)
+
+        if args.mir:
+            b.mirror_all(fast=(args.mir == "fast"), dry_run=False)
 
         if args.lsffs:
             b.full_folder_sync(args.lsffs[0], args.lsffs[1], dry_run=True)

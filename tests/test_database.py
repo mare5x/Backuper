@@ -6,8 +6,8 @@ def list_all():
             print(archive.path)
 
 def list_paths_contains(path):
-    with db.GoogleDriveDB() as _:        
-        q = db.DriveArchive.select().where(db.DriveArchive.path.contains(path))
+    with db.GoogleDriveDB() as gddb:        
+        q = gddb.model.select().where(gddb.model.path.contains(path))
         for archive in q.iterator():
             print(archive.path)
     

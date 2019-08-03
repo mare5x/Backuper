@@ -29,7 +29,7 @@ def db_upload_test(path):
     input("Press any key to clean up.")
     google.delete(folder_id)
     entry = database.unify_path(path)
-    query = database.DriveArchive.select().where(database.DriveArchive.path.contains(entry))
+    query = db.model.select().where(db.model.path.contains(entry))
     for archive in query.iterator():
         archive.delete_instance()
 
