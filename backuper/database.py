@@ -5,7 +5,6 @@ import concurrent.futures
 from pytools import filetools as ft
 
 import peewee
-from tqdm import tqdm
 
 
 DB_FILE_PATH = "archived.db"
@@ -117,45 +116,13 @@ def rename_database_path(old_path, new_path):
     
     Use it when moving a folder to a different location on your drive.
     """
-    print("Replacing {} database entries to {} ...".format(old_path, new_path))
+    print("Replacing database entries {} => {} ...".format(old_path, new_path))
     logging.info("rename_database_path({}, {})".format(old_path, new_path))
     
     old_path = unify_path(old_path)
     new_path = unify_path(new_path)
     
-    q = DriveArchive.select().where(DriveArchive.path.startswith(old_path))
-    with tqdm(total=q.count()) as pbar:
+    with GoogleDriveDB() as db:
+        q = db.model.select().where(db.model.path.startswith(old_path))
         for archive in q.iterator():
-            db_update(archive, path=archive.path.replace(old_path, new_path, count=1))
-            pbar.update()
-
-def clean_database():
-    """Remove every locally non-existent file from the database.
-    
-    Use with caution.
-    """
-    pass
-
-def rebuild_database(google, config):
-    """Rebuild database by removing non-existent files in Google Drive from the database archive.
-
-    Used for maintenance.
-    """
-    print("Rebuilding database ...")
-    logging.info("rebuild_database()")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor, \
-                    tqdm(total=DriveArchive.select().count()) as pbar:
-        futures = {}
-        for archive in DriveArchive.select().iterator():
-            futures[executor.submit(retry_operation, self.google.exists, archive.drive_id, error=RETRYABLE_ERRORS)] = archive
-
-        for future in concurrent.futures.as_completed(futures):
-            pbar.update()
-
-            if not future.result():  # doesn't exist
-                archive = futures[future]
-                if not os.path.exists(archive.path) or self.is_blacklisted(archive.path):
-                    logging.info("Removed {} from database.".format(archive.path))
-                    archive.delete_instance()
-            del futures[future]
+            db.update(archive, path=archive.path.replace(old_path, new_path, count=1))

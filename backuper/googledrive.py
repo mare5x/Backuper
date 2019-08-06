@@ -19,7 +19,7 @@ import concurrent.futures
 from functools import wraps
 
 from pytools import filetools as ft
-from pytools import printer, cache
+from pytools import progressbar, cache
 
 
 NUM_RETRIES = 6
@@ -122,24 +122,6 @@ class GoogleDrive:
         self.remote_cache[file_id] = path
         return path
 
-    def print_progress_bar(self, block, progress, time_started, desc=""):
-        """
-        Positional arguments:
-            block: pytools.printer.block object
-            progress: float in range [0, 1]
-            time_started: time.time()
-        Keyword arguments:
-            desc: prefix bar description.
-        """
-        # Linear fit progress.
-        t0 = time.time() - time_started
-        time_left = ft.format_seconds((t0 / progress) - t0) if progress > 0 else "inf"
-        block.print("{desc} {progress:.2f}% [{elapsed} || {left}]".format(
-            desc=desc,
-            progress=progress * 100,
-            elapsed=ft.format_seconds(t0),
-            left=time_left))
-
     def walk_folder(self, folder_id, dirname=None, dirpath="", fields="files(id, name)", q=None):
         """Recursively yield all content in folder_id (similar to os.walk). 
         
@@ -219,14 +201,13 @@ class GoogleDrive:
         with open(download_path, 'wb') as f:
             downloader = MediaIoBaseDownload(f, request, chunksize=self.DOWNLOAD_CHUNK_SIZE)
 
-            b = printer.block()
+            pbar = progressbar.blockbar(desc="DL " + filename, bar_width=12)
             time_started = time.time()
             done = False
             while not done:
                 status, done = downloader.next_chunk(num_retries=NUM_RETRIES)
-                self.print_progress_bar(b, status.progress() if status else 1, time_started, 
-                    desc="DL {}".format(filename))
-            b.exit()
+                pbar.set_progress(status.progress() if status else 1)
+            pbar.close()
 
         return download_path
 
@@ -254,15 +235,13 @@ class GoogleDrive:
         media_body = MediaFileUpload(file_path, mimetype=mime, chunksize=self.UPLOAD_CHUNK_SIZE, resumable=resumable)
         request = self._determine_update_or_insert(body, media_body=media_body, file_id=file_id, fields=fields)
         
-        b = printer.block()
+        pbar = progressbar.blockbar(desc="UL " + body["name"], bar_width=12)
         time_started = time.time()
         response = None if resumable else request.execute()  # Empty files are not chunked.
         while response is None:
             status, response = request.next_chunk(num_retries=5)
-            self.print_progress_bar(b, status.progress() if status else 1, time_started, 
-                desc="UL {}".format(body['name']))
-        self.print_progress_bar(b, 1, time_started, desc="UL {}".format(body['name']))
-        b.exit()
+            pbar.set_progress(status.progress() if status else 1)
+        pbar.close()
 
         return response
 

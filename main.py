@@ -108,7 +108,6 @@ if __name__ == "__main__":
 
 
 # add better command line progress display
-# use tqdm
 
 # ONLY UPDATE DB INFORMATION IF FILE SUCCESSFULLY UPLOADED etc. ....
 

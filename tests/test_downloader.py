@@ -6,7 +6,7 @@ from backuper import googledrive
 def dl_folder(google, folder_id, dest_path):
     dl = downloader.DriveDownloader(google, update_db=False)
     Entry = dl.DLQEntry
-    q = dl.start_download_queue(n_threads=8)
+    q = dl.start_download_queue(n_threads=5)
     for dirpath, dirnames, filenames in google.walk_folder(folder_id, fields="files(id, md5Checksum, name)"):
         path = os.path.join(dest_path, dirpath[0])
         dir_id = dirpath[1]

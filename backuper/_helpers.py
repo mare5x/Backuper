@@ -7,9 +7,8 @@ import concurrent.futures
 import logging
 import time
 
-from tqdm import tqdm
-
 from backuper import database, settings
+from pytools import progressbar
 
 
 def get_unarchived_files_in_google_drive(google, folder_id):
@@ -31,6 +30,21 @@ def delete_unarchived_files_in_google_drive(google, folder_id):
     ids = list(get_unarchived_files_in_google_drive(google, folder_id))
     google.batch_delete(ids)
 
+def remove_gd_nonexistent_from_db(google, config):
+    """Rebuild database by removing non-existent files in Google Drive from the database archive.
+
+    Used for maintenance.
+    """
+    print("Removing non-existent files in Google Drive from the database ...")
+    logging.info("remove_gd_nonexistent_from_db()")
+
+    with database.GoogleDriveDB() as db:
+        for archive in db.model.select().iterator():
+            if google.exists(archive.drive_id): continue
+            if not os.path.exists(archive.path) or config.is_blacklisted(archive.path):
+                logging.info("Removed {} from database.".format(archive.path))
+                archive.delete_instance()
+
 def get_all_removed_from_local_db():
     with database.GoogleDriveDB() as db:
         for archive in db:
@@ -49,7 +63,7 @@ def delete_all_removed_from_local_db_batched(google):
     ids = { rem.drive_id for rem in get_all_removed_from_local_db() }
     retry_ids = set()
     retry_count = 0
-    pbar = tqdm(total=len(ids))
+    pbar = progressbar.progressbar(total=len(ids))
 
     def _batch_delete_callback(file_id, _, exception):
         nonlocal retry_count
@@ -91,7 +105,7 @@ def delete_all_removed_from_local_db(google):
 
     db = database.GoogleDriveDB()
     archives = list(get_all_removed_from_local_db())
-    for archive in tqdm(archives):
+    for archive in progressbar.progressbar(archives):
         google.delete(archive.drive_id)
         logging.info("Removed {} ({}) from database and/or Google Drive.".format(archive.drive_id, archive.path))
         archive.delete_instance()
@@ -113,7 +127,7 @@ def remove_blacklisted_paths(google):
     
     db = database.GoogleDriveDB()
     archives = list(get_blacklisted_archives())
-    for archive in tqdm(archives):
+    for archive in progressbar.progressbar(archives):
         google.delete(archive.drive_id)
         logging.info("Removed {} ({}) from database and/or Google Drive.".format(archive.drive_id, archive.path))
         archive.delete_instance()
