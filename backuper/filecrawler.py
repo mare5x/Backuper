@@ -244,4 +244,3 @@ class DriveFileCrawler:
 
         if update_token:
             conf.set_last_removed_change_token(self.google.get_start_page_token())
-

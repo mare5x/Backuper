@@ -81,11 +81,12 @@ class GoogleDriveDB:
     def create_or_update(**kwargs):
         # Use unique fields for the 'get' part. And the rest
         # for updating/creating.
-        UNIQUE = ["path", "drive_id"]
+        UNIQUE = ["drive_id", "path"]
         get = dict()
         for field in UNIQUE:
             if field in kwargs:
                 get[field] = kwargs.pop(field)
+                break
 
         model, created = GoogleDriveDB.model.get_or_create(**get, defaults=kwargs)
         if not created:

@@ -10,8 +10,8 @@ from . import settings, googledrive, uploader, downloader, filecrawler, treelog,
 
 # Guarantee: no files will be deleted from the local file system!
 
-SETTINGS_FILE = "_settings.ini"
-DATA_FILE = "_backuper.ini"
+SETTINGS_FILE = "settings.ini"
+DATA_FILE = "backuper.ini"
 
 
 class Backuper:
@@ -79,9 +79,40 @@ class Backuper:
         for fpath in file_crawler.get_files_to_sync(dirpath):
             q.put(fpath)
 
+    def handle_download_conflicts(self, conflicts, dry_run=False):
+        print("Handling download conflicts ..." + (" (dry)" if dry_run else ""))
+        
+        help_str = "Enter 'y' to accept the resolution, 'n' to reject it" \
+                   " and 'o' to accept the resolution but create a non-conflicting filename." \
+                   " Enter '?' for help."
+        
+        print("There are {} download conflicts.".format(len(conflicts)))
+        print(help_str)
+
+        resolved = []
+        rejected = []
+        for obj, path in conflicts:
+            while True:
+                q = input("CONFLICT: {remote_path} ({file_id}) => {path} (y/n/o/?): ".format(
+                        remote_path=obj.remote_path, file_id=obj.file_id, path=path))
+                if q == 'y':
+                    resolved.append((obj, path))
+                    break
+                elif q == 'n':
+                    rejected.append((obj, path))
+                    break
+                elif q == 'o':
+                    resolved.append((obj, ft.create_filename(path)))
+                    break
+                elif q == '?':
+                    print(help_str)
+                else:
+                    print("Invalid input.")
+        return resolved, rejected
+
     def download_changes(self, dry_run=False):
         print("Downloading changes ..." + (" (dry)" if dry_run else ""))
-        THREADS = 8
+        THREADS = 5
         db = database.GoogleDriveDB()
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
         gd_downloader = downloader.DriveDownloader(self.google)
@@ -108,20 +139,30 @@ class Backuper:
                 tail = os.path.join(tmp, tail)
             return os.path.join(tracked_map[head], tail)
 
-        q = gd_downloader.start_download_queue(n_threads=THREADS)
-        for obj in crawler.get_changes_to_download(root_path, update_token=(not dry_run)):
-            if obj.sync_decision == crawler.CONFLICT_FLAG:
-                print("CONFLICT", obj)
-                continue
-            path = get_dl_path(obj.remote_path)
+        def enqueue(q, obj, path):
             args = { "type": obj.type, "file_id": obj.file_id, "path": path }
             if obj.type == "#file":
                 path, filename = os.path.split(path)
                 args.update( {'path': path, 'filename': filename, 'md5sum': obj.md5checksum} )
-            
             if dry_run: pprint.pprint(args)
             else: q.put(Entry(**args))
-        gd_downloader.wait_for_queue(q)
+
+        q = gd_downloader.start_download_queue(n_threads=THREADS)
+        conflicts = []
+        for obj in crawler.get_changes_to_download(root_path, update_token=(not dry_run)):
+            path = get_dl_path(obj.remote_path)
+            if obj.sync_decision == crawler.CONFLICT_FLAG:
+                conflicts.append((obj, path))
+                continue
+            enqueue(q, obj, path)
+        
+        no_conflicts = len(conflicts) == 0
+        gd_downloader.wait_for_queue(q, stop=no_conflicts)
+        if not no_conflicts:
+            resolved, rejected = self.handle_download_conflicts(conflicts, dry_run=dry_run)
+            for obj, path in resolved:
+                enqueue(q, obj, path)
+            gd_downloader.wait_for_queue(q)
 
         if not dry_run:
             self.conf.data_file.set_last_download_sync_time()
@@ -193,26 +234,33 @@ class Backuper:
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
         Entry = gd_downloader.DLQEntry
         
+        def enqueue(q, obj, path):
+            args = { "type": obj.type, "file_id": obj.file_id, "path": path }
+            if obj.type == "#file":
+                path, filename = os.path.split(path)
+                args.update( {'path': path, 'filename': filename, 'md5sum': obj.md5checksum} )
+            if dry_run: pprint.pprint(args)
+            else: q.put(Entry(**args))
+
         q = gd_downloader.start_download_queue()
+        conflicts = []
         for obj in crawler.get_ids_to_download_in_folder(folder_id):
             # Get rid of the folder name prefix, so that local_path is the 
             # destination folder of items inside folder_id.
             remote_path = obj.remote_path.split(os.path.sep, 1)[1] if os.path.sep in obj.remote_path else ""
             dl_path = os.path.join(local_path, remote_path)
             if obj.sync_decision == crawler.CONFLICT_FLAG or os.path.exists(dl_path):
-                print("CONFLICT", obj)
+                conflicts.append((obj, dl_path))
                 continue
-            args = { "type": obj.type, "file_id": obj.file_id, "path": dl_path }
-            if obj.type == "#file":
-                path, filename = os.path.split(dl_path)
-                args.update( {'path': path, 'filename': filename, 'md5sum': obj.md5checksum} )
-            
-            if dry_run:
-                pprint.pprint(args)
-            else:
-                q.put(Entry(**args))
-
-        gd_downloader.wait_for_queue(q)
+            enqueue(q, obj, dl_path)
+        
+        no_conflicts = len(conflicts) == 0
+        gd_downloader.wait_for_queue(q, stop=no_conflicts)
+        if not no_conflicts:
+            resolved, rejected = self.handle_download_conflicts(conflicts, dry_run=dry_run)
+            for obj, path in resolved:
+                enqueue(q, obj, path)
+            gd_downloader.wait_for_queue(q)
 
     def full_folder_sync(self, folder_id, local_path, dry_run=False):
         print("Fully syncing: {} <=> {} ...".format(folder_id, local_path) + (" (dry)" if dry_run else ""))

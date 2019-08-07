@@ -52,4 +52,4 @@ class DriveDownloader:
         """q must be a DownloadQueue returned by the start_download_queue method.
         If 'stop' is True, consider the queue unusable. Associated threads will stop.
         """
-        return _loader.wait_for_queue(q, stop=True)
+        return _loader.wait_for_queue(q, stop=stop)

@@ -205,8 +205,13 @@ def delete_removed_from_local_db(google, local_path, dry_run=False):
     
     removed = set()
     for archive in archives:
+        if dry_run: 
+            print(archive.path, archive.drive_id)
+            continue
+
         # Minimizing GD API calls is key for speed.
-        if dry_run or (archive.drive_id in removed): continue
+        if archive.drive_id in removed: 
+            continue
 
         print(archive.path, archive.drive_id)
         google.delete(archive.drive_id)
@@ -215,23 +220,24 @@ def delete_removed_from_local_db(google, local_path, dry_run=False):
         for arch in q.iterator():
             removed.add(arch.drive_id)
             arch.delete_instance()
-            logging.info("Removed {} ({}) from database and Google Drive.".format(archive.drive_id, archive.path))
+            logging.info("Removed {} ({}) from database and Google Drive.".format(arch.drive_id, arch.path))
 
     db.close()
 
 
 if __name__ == "__main__":
+    logging.basicConfig(filename='logs/_helpers.log', level=logging.INFO)
+
     from backuper import googledrive
     g = googledrive.GoogleDrive()
     # for _ in get_unarchived_files_in_google_drive(g, "0B94xod46LwqkZENtNWhLMXZ4UzA"): pass
     
-    # for archive in get_all_removed_from_local_db():
-    #     print(archive.path, archive.drive_id)
-    logging.basicConfig(filename='logs/_helpers.log', level=logging.INFO)
+    for archive in get_all_removed_from_local_db():
+        print(archive.path, archive.drive_id)
     # delete_all_removed_from_local_db_batched(g)
     # delete_all_removed_from_local_db(g)
 
     # for archive in get_blacklisted_archives():
     #     print(archive.path, archive.drive_id)
-    remove_blacklisted_paths(g)
+    # remove_blacklisted_paths(g)
 
