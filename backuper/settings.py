@@ -118,6 +118,13 @@ class DataFile(BaseFile):
             self.make_layout()
             self.write_to_file()
 
+    def init_values(self, google):
+        token = google.get_start_page_token()
+        if self.get_last_removed_change_token() == -1:
+            self.set_last_removed_change_token(token)
+        if self.get_last_download_change_token() == -1:
+            self.set_last_download_change_token(token)
+
     def make_layout(self):
         self['Backuper'] = {
             'blacklisted_paths': ''

@@ -35,6 +35,9 @@ class Backuper:
     def __exit__(self, *exc):
         self.exit()
 
+    def _init(self):
+        self.conf.data_file.init_values(self.google)
+
     def exit(self):
         self.google.exit()
         self.conf.exit()
@@ -183,9 +186,11 @@ class Backuper:
         if folder_id is None:
             entry = database.unify_path(path)
             archive = db.get("path", entry)
-            if not archive: 
-                return
-            folder_id = archive.drive_id
+            if archive: 
+                folder_id = archive.drive_id
+            else:
+                gd_uploader = uploader.DBDriveUploader(self.google, self.conf.get_root_folder_id(self.google))
+                folder_id = gd_uploader.create_dir(entry)
 
         print("Mirror {} => {} ...".format(path, folder_id) + (" (dry)" if dry_run else ""))
 

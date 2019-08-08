@@ -76,6 +76,9 @@ def main(log=True):
         return -1
 
     with backuper.Backuper(pretty_log=args.nolog) as b:
+        if args.init:
+            b._init()
+
         if args.rem:
             opt = args.rem
             if opt == "list":
