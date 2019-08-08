@@ -3,7 +3,7 @@ import logging
 
 from pytools import filetools as ft
 
-from backuper import backuper
+from backuper import backuper    
 
 
 def main(log=True):
@@ -66,6 +66,7 @@ def main(log=True):
     parser.add_argument("-ffs", action=_FullFolderSyncAction)
     parser.add_argument("-mir", action=_MirrorAction)
     parser.add_argument("-nolog", action="store_false", help="DON'T create a pretty log file of all I/O operations.")
+    parser.add_argument("-init", action="store_true", help="Initialize program for first time use.")
     args = parser.parse_args()
 
     # Check if any option is actually set.
