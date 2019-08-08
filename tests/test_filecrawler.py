@@ -38,7 +38,7 @@ def test_drivecrawler_folder(folder_id):
     conf.exit()
     db.close()
 
-def test_drivecrawler_changes(folder_id):
+def test_drivecrawler_changes():
     db = database.GoogleDriveDB()
     conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
     crawler = filecrawler.DriveFileCrawler(conf, googledrive.GoogleDrive())
@@ -65,6 +65,6 @@ def test_removed_changes():
 
 if __name__ == "__main__":
     # test_localfilecrawler()
-    # test_drivecrawler_folder("1fPEdsFWRjHy010hxiZ5Ome-0w70Sn4-v")  # projects/new_backuper
-    test_drivecrawler_changes("0B94xod46LwqkZENtNWhLMXZ4UzA")
+    # test_drivecrawler_folder("1fPEdsFWRjHy010hxiZ5Ome-0w70Sn4-v")
+    test_drivecrawler_changes()
     # test_removed_changes()
