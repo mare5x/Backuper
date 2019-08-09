@@ -163,6 +163,7 @@ class DriveFileCrawler:
         if tmp: blacklisted_remote_paths.add(self.google.get_remote_path(tmp))
         
         def is_valid_path(remote_path):
+            if remote_path == root_path: return False  # Edge case. Yield only descendants from root_path.
             if not remote_path.startswith(root_path): return False
             for path in blacklisted_remote_paths:
                 if remote_path.startswith(path): return False

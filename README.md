@@ -17,16 +17,15 @@ First written in 2015. Refactored in 2019.
 ## Usage
 
 ```
-usage: backuper.py [-h] [-uc [{list,upload}]] [-dc [{list,download}]] [-tree]
+usage: backuper.py [-h] [-uc [{list,sync}]] [-dc [{list,sync}]] [-tree]
                    [-rem [{list,blacklist,remove}]]
                    [-ffs [folder_id local_path [dry ...]]]
                    [-mir [fast/full [dry/sync ...]]] [-nolog] [-init]
 
 optional arguments:
   -h, --help            show this help message and exit
-  -uc [{list,upload}]   Upload changes listed by 'list' (see settings.ini).
-  -dc [{list,download}]
-                        Download changes listed by 'list'.
+  -uc [{list,sync}]     Upload changes listed by 'list' (see settings.ini).
+  -dc [{list,sync}]     Download changes listed by 'list'.
   -tree                 Upload 'trees' of directories (see settings.ini).
   -rem [{list,blacklist,remove}]
                         List synced files that were removed from Google Drive.

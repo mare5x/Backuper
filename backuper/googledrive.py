@@ -51,9 +51,9 @@ def handle_http_error(silent=False, ignore=False):
                     
                     if e.resp.status in RETRYABLE_HTTP_ERROR_CODES:
                         sleeptime = 2 ** attempt
-                        dynamic_print('Waiting for {} s before retry {}'.format(sleeptime, attempt))
                         time.sleep(sleeptime)
-                logging.info("Retrying {func}({args}) due to error {error}".format(func=func.__name__, 
+                    
+                    logging.info("Retrying {func}({args}) due to error {error}".format(func=func.__name__, 
                                                                                    args=(args, kwargs), 
                                                                                    error=e))
             if silent:
@@ -116,6 +116,9 @@ class GoogleDrive:
         if path is not None: return path
         
         resp = self.get_metadata(file_id, fields="name,parents")
+        if not resp:  # There was an error. Most likely file_id doesn't exist.
+            raise RuntimeError("Error retrieving metadata! Does {} exist?".format(file_id))
+
         parent_id = resp["parents"][0] if "parents" in resp else None
         path = os.path.join(self.get_remote_path(parent_id), resp["name"])
 
@@ -311,7 +314,7 @@ class GoogleDrive:
     def get_file_by_name(self, name, fields="files(id, name, parents)"):
         return self.drive_service.files().list(q="name='{}'".format(name), fields=fields).execute()["files"]
 
-    def get_all_in_folder(self, folder_id, fields="files(trashed,id,name", q=None):
+    def get_all_in_folder(self, folder_id, fields="files(trashed,id,name)", q=None):
         """Yields all (non-trashed) files in a folder (direct children) with fields metadata.
         Yields: (#file or #folder, resp) pairs."""
         

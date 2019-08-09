@@ -14,3 +14,4 @@ def list_paths_contains(path):
 
 if __name__ == "__main__":
     list_paths_contains("backuper")
+    list_all()

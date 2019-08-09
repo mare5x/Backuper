@@ -75,9 +75,19 @@ class UserSettingsFile(BaseFile):
         
         # Files/directories with these extensions won't get synced.
         blacklisted_extensions = 
+            .ipch;
+            .pdb;
+            .ilk;
+            .tlog;
+            .vc.db;
+            .pyc;
+            .lnk;
         
         # Files/directories with these names won't get synced.
         blacklisted_names = 
+            Thumbs.db;
+            .vs;
+            __pycache__;
 
         # Generate a tree log of the given directories, including files.
         tree_with_files = 
@@ -218,7 +228,13 @@ class Settings:
     def get_root_folder_id(self, google):
         folder_id = self.data_file.get_root_folder_id()
         if folder_id is None:
-            folder_id = google.create_folder("Backuper")
+            # Try to use the root Backuper folder if it exists.
+            for resp in google.get_folders_in_folder('root', q="name='Backuper'"):
+                folder_id = resp["id"]
+                print("Using existing folder as root folder: " + google.get_remote_path(folder_id))
+                break
+            if folder_id is None:
+                folder_id = google.create_folder("Backuper")
             self.data_file.set_root_folder_id(folder_id)
         return folder_id
 

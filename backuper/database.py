@@ -105,7 +105,11 @@ class GoogleDriveDB:
 
 
 def unify_path(path):
-    """All paths stored in the database must go through this function!"""
+    """All paths stored in the database must go through this function!
+
+    NOTE: on Windows all paths are case in-sensitive so normcase will 
+    lower them. On UNIX paths are case sensitive, so normcase won't lower
+    them!"""
     return os.path.normcase(os.path.abspath(path))
 
 def unify_str(txt):

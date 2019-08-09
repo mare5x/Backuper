@@ -27,7 +27,7 @@ def main(log=True):
             if n < 2 or n > 3: return parser.error("Invalid number of arguments for -ffs!")
             # Dry run if 'dry' or left out. If 'sync' sync, otherwise raise error.
             if n == 2:
-                values.append(options[0])
+                values.append(self.options[0])
             elif n == 3:
                 if values[2] not in self.options:
                     return parser.error("Unknown argument for -ffs!")
@@ -52,15 +52,15 @@ def main(log=True):
                     return parser.error("Invalid option 1 for -mir!")
                 if n == 1:
                     values.append(options2[0])
-                if n == 2:
+                elif n == 2:
                     if values[1] not in options2:
                         return parser.error("Invalid option 2 for -mir!")
                 else:
                     return parser.error("Too many arguments for -mir!")
             setattr(namespace, self.dest, values)
 
-    parser.add_argument("-uc", nargs='?', const="list", choices=["list", "upload"], help="Upload changes listed by 'list' (see settings.ini).")
-    parser.add_argument("-dc", nargs='?', const="list", choices=["list", "download"],  help="Download changes listed by 'list'.")
+    parser.add_argument("-uc", nargs='?', const="list", choices=["list", "sync"], help="Upload changes listed by 'list' (see settings.ini).")
+    parser.add_argument("-dc", nargs='?', const="list", choices=["list", "sync"],  help="Download changes listed by 'list'.")
     parser.add_argument("-tree", action="store_true", help="Upload 'trees' of directories (see settings.ini).")
     parser.add_argument("-rem", nargs='?', const="list", choices=["list", "blacklist", "remove"], help="List synced files that were removed from Google Drive.")
     parser.add_argument("-ffs", action=_FullFolderSyncAction)
@@ -100,7 +100,7 @@ def main(log=True):
             opt = args.uc
             if opt == "list": 
                 b.list_upload_changes()
-            elif opt == "upload": 
+            elif opt == "sync": 
                 b.upload_changes()
 
         if args.dc:

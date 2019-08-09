@@ -36,6 +36,7 @@ class Backuper:
         self.exit()
 
     def _init(self):
+        self.conf.get_root_folder_id(self.google)  # Create the root folder.
         self.conf.data_file.init_values(self.google)
 
     def exit(self):
@@ -154,7 +155,7 @@ class Backuper:
         conflicts = []
         for obj in crawler.get_changes_to_download(root_path, update_token=(not dry_run)):
             path = get_dl_path(obj.remote_path)
-            if obj.sync_decision == crawler.CONFLICT_FLAG:
+            if obj.sync_decision == crawler.CONFLICT_FLAG or os.path.exists(path):
                 conflicts.append((obj, path))
                 continue
             enqueue(q, obj, path)
@@ -189,8 +190,14 @@ class Backuper:
             if archive: 
                 folder_id = archive.drive_id
             else:
-                gd_uploader = uploader.DBDriveUploader(self.google, self.conf.get_root_folder_id(self.google))
-                folder_id = gd_uploader.create_dir(entry)
+                # On a dry_run nothing should be created. At this point
+                # we can conclude that this is the first time syncing this path
+                # onto GD.
+                if dry_run:
+                    folder_id = "?UNKNOWN?"
+                else:
+                    gd_uploader = uploader.DBDriveUploader(self.google, self.conf.get_root_folder_id(self.google))
+                    folder_id = gd_uploader.create_dir(entry)
 
         print("Mirror {} => {} ...".format(path, folder_id) + (" (dry)" if dry_run else ""))
 
@@ -204,6 +211,7 @@ class Backuper:
 
     def mirror_all(self, fast=False, dry_run=False):
         # Performance idea: use a UFDS (union find disjoint set).
+        print("Mirroring all sync_dirs (settings.ini) ...")
         for path in self.conf.sync_dirs:
             self.mirror(path, fast=fast, dry_run=dry_run)
 
@@ -217,10 +225,11 @@ class Backuper:
         
         # Link folder_id and local_path manually, so that no new base folder
         # is created inside folder_id.
-        entry = database.unify_path(local_path)
-        _db = database.GoogleDriveDB
-        _db.create_or_update(path=entry, drive_id=folder_id, 
-            date_modified_on_disk=ft.date_modified(entry), md5sum=_db.FOLDER_MD5)
+        if not dry_run:
+            entry = database.unify_path(local_path)
+            _db = database.GoogleDriveDB
+            _db.create_or_update(path=entry, drive_id=folder_id, 
+                date_modified_on_disk=ft.date_modified(entry), md5sum=_db.FOLDER_MD5)
 
         for folder in file_crawler.get_folders_to_sync(local_path):
             if dry_run: print(folder)

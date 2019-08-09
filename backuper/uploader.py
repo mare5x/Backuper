@@ -14,7 +14,9 @@ class DriveUploader:
     """Synchronized multi threaded file uploading to Google Drive."""
 
     # folder_id [None] and file_id [None] are optional fields.
-    DUQEntry = namedtuple("DUQEntry", ["path", "folder_id", "file_id"], defaults=[None, None])
+    DUQEntry = namedtuple("DUQEntry", ["path", "folder_id", "file_id"])
+    # Compatibility with Python < 3.7 (https://stackoverflow.com/questions/11351032/namedtuple-and-default-values-for-optional-keyword-arguments)
+    DUQEntry.__new__.__defaults__ = (None, None)  
 
     def __init__(self, google, root_folder_id='root'):
         self.google = google

@@ -13,7 +13,9 @@ class DownloadQueue(_loader._Queue): pass
 class DriveDownloader:
     """Manages synchronized multi threaded file downloading from Google Drive."""
     
-    DLQEntry = namedtuple("DLQEntry", ["type", "file_id", "path", "md5sum", "filename"], defaults=['', ''])
+    DLQEntry = namedtuple("DLQEntry", ["type", "file_id", "path", "md5sum", "filename"])
+    # Compatibility with Python < 3.7 (https://stackoverflow.com/questions/11351032/namedtuple-and-default-values-for-optional-keyword-arguments)
+    DLQEntry.__new__.__defaults__ = ('', '')
 
     def __init__(self, google, update_db=True):
         self.google = google
