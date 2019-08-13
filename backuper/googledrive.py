@@ -97,33 +97,16 @@ class GoogleDrive:
 
         self.drive_service = build('drive', 'v3', credentials=self.credentials, requestBuilder=self._build_request)
 
-        # For remote path strings caching.
-        self.remote_cache = cache.LRUcache()
+        # file_id -> metadata response cache.
+        self.metadata_cache = cache.LRUcache(32768)  # 2^15
 
     def _build_request(self, _http, *args, **kwargs):
         # Create a new Http() object for every request
         http = self.credentials.authorize(httplib2.Http())
         return HttpRequest(http, *args, **kwargs)
 
-    def exit(self): pass  # Stub.
-
-    def get_remote_path(self, file_id):
-        # Uses a LRU cache to store known (file_id, path) pairs.
-        # NOTE: the assumption is that no files will get moved or renamed!
-        if file_id is None: return os.path.sep
-
-        path = self.remote_cache.get(file_id)
-        if path is not None: return path
-        
-        resp = self.get_metadata(file_id, fields="name,parents")
-        if not resp:  # There was an error. Most likely file_id doesn't exist.
-            raise RuntimeError("Error retrieving metadata! Does {} exist?".format(file_id))
-
-        parent_id = resp["parents"][0] if "parents" in resp else None
-        path = os.path.join(self.get_remote_path(parent_id), resp["name"])
-
-        self.remote_cache[file_id] = path
-        return path
+    def exit(self): 
+        print("Metadata cache hits/misses:", self.metadata_cache.hits, self.metadata_cache.misses)
 
     def walk_folder(self, folder_id, dirname=None, dirpath="", fields="files(id, name)", q=None):
         """Recursively yield all content in folder_id (similar to os.walk). 
@@ -145,7 +128,7 @@ class GoogleDrive:
             if not dirname:
                 return
 
-        fields = self.add_to_fields(fields, "files(id,name)")
+        fields = self._merge_fields(fields, "files(id,name)")
         dirpath = os.path.join(dirpath, dirname)
 
         # It's faster to make fewer API requests ...
@@ -295,10 +278,47 @@ class GoogleDrive:
         date = self.get_metadata(file_id)['modifiedTime'].rsplit('.', 1)[0]
         if date:
             return datetime.datetime.strptime(date, '%Y-%m-%dT%H:%M:%S')
+            
+    def get_remote_path(self, file_id, stop_id=None):
+        if file_id == stop_id: return os.path.sep
+        
+        # NOTE: metadata is cached!
+        resp = self.get_metadata(file_id, fields="name,parents")
+        if not resp:  # There was an error. Most likely file_id doesn't exist.
+            raise RuntimeError("Error retrieving metadata! Does {} exist?".format(file_id))
+
+        parent_id = resp["parents"][0] if "parents" in resp else stop_id
+        path = os.path.join(self.get_remote_path(parent_id, stop_id), resp["name"])
+
+        return path
 
     @handle_http_error(ignore=False)
     def get_metadata(self, file_id, fields=None):
-        return self.drive_service.files().get(fileId=file_id, fields=fields).execute()
+        resp = self.metadata_cache.get(file_id)
+        
+        if resp is not None:
+            if fields is None:
+                return resp
+            
+            # Are there any missing fields?
+            obj = self._parse_fields_string(fields)
+            missing = False
+            for key in obj:
+                if key not in resp:
+                    missing = True
+                    break
+            if not missing:
+                return resp
+
+        new_resp = self.drive_service.files().get(fileId=file_id, fields=fields).execute()
+        
+        if resp is not None:
+            resp.update(new_resp)
+        else:
+            resp = new_resp
+        self.metadata_cache[file_id] = resp
+        
+        return resp
 
     @handle_http_error(ignore=False)
     def update_metadata(self, file_id, fields=None, **kwargs):
@@ -327,7 +347,7 @@ class GoogleDrive:
         """Yields all (non-trashed) files in a folder (direct children) with fields metadata.
         Yields: (#file or #folder, resp) pairs."""
         
-        fields = self.add_to_fields(fields, 'files(trashed,id,mimeType),nextPageToken')
+        fields = self._merge_fields(fields, 'files(trashed,id,mimeType),nextPageToken')
         search_query = "'{folder_id}' in parents".format(folder_id=folder_id)
         if q:
             search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
@@ -348,7 +368,7 @@ class GoogleDrive:
         """Yields all (non-trashed) files in a folder (direct children) with fields metadata. 
         Doesn't include folders."""
         
-        fields = self.add_to_fields(fields, 'files(trashed,id),nextPageToken')
+        fields = self._merge_fields(fields, 'files(trashed,id),nextPageToken')
         search_query = "mimeType!='{}' and '{folder_id}' in parents".format(GoogleDrive.FOLDER_MIMETYPE, folder_id=folder_id)
         if q:
             search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
@@ -367,7 +387,7 @@ class GoogleDrive:
     def get_folders_in_folder(self, folder_id, fields="files(trashed, id, name)", q=None):
         """Yields all (non-trashed) folders in a folder (direct children) with fields metadata."""
         
-        fields = self.add_to_fields(fields, 'files(trashed,id),nextPageToken')
+        fields = self._merge_fields(fields, 'files(trashed,id),nextPageToken')
         search_query = "mimeType='{}' and '{folder_id}' in parents".format(GoogleDrive.FOLDER_MIMETYPE, folder_id=folder_id)
         if q:
             search_query = "{search_query} and ({user_q})".format(search_query=search_query, user_q=q)
@@ -384,7 +404,7 @@ class GoogleDrive:
             request = self.drive_service.files().list_next(request, response)
 
     def get_parent_id(self, file_id):
-        resp = self.get_metadata(file_id, fields="parents")
+        resp = self.get_metadata(file_id, fields="name,parents")  # same fields as remote path for caching
         if resp and "parents" in resp: 
             return resp["parents"][0]
         return None
@@ -403,36 +423,95 @@ class GoogleDrive:
                 return True
         return False
 
-    def add_to_fields(self, original_fields, add_fields):
-        if original_fields:
-            orig_fields = re.split(',(?![^\(\)]*\))', original_fields)
-            add_fields = re.split(',(?![^\(\)]*\))', add_fields)
+    def _parse_fields_string(self, fields):
+        """Parse a valid string of 'fields' into a dict object."""
+        sep = ",/()"
 
-            for field in add_fields:
-                if field in orig_fields:
-                    continue
+        # 1. remove all whitespace.
+        _fields = ""
+        for c in fields:
+            if not c.isspace():
+                _fields += c
+        fields = _fields
+        
+        i = 0
+        n = len(fields)
 
-                match = re.match("(.*\()(.*)(\).*)", field)
-                if match:
-                    old_field = [orig_field for orig_field in orig_fields if match.group(1) in orig_field]
-                    if old_field:
-                        old_field = old_field.pop()
-                        old_field_match = re.match("(.*\()(.*)(\).*)", old_field)
-                        inner_old_fields = [f.strip() for f in old_field_match.group(2).split(',')]
-                        inner_new_fields = [f.strip() for f in match.group(2).split(',')]
-                        for inner_new_field in inner_new_fields:
-                            if inner_new_field and inner_new_field not in inner_old_fields:
-                                inner_old_fields.append(inner_new_field)
+        def parse(start):
+            nonlocal i, n
+            obj = dict()
+            while i < n:
+                cur = ''
+                while i < n and fields[i] not in sep:
+                    cur += fields[i]
+                    i += 1
 
-                        field = "{left}{inner}{right}".format(left=old_field_match.group(1),
-                                                              inner=",".join(inner_old_fields),
-                                                              right=old_field_match.group(3)).strip(',')
-                        orig_fields.remove(old_field)
+                obj[cur] = 0
+                if i == n: 
+                    break
 
-                orig_fields.append(field)
+                if fields[i] == '/':
+                    i += 1
+                    obj[cur] = parse(i - 1)
+                elif fields[i] == '(':
+                    i += 1
+                    obj[cur] = parse(i - 1)
+                
+                if i == n:
+                    break
 
-            return ",".join(orig_fields).strip(',')
-        return add_fields
+                if fields[i] == ',':
+                    if fields[start] == '/':
+                        break
+                elif fields[i] == ')':
+                    if fields[start] == '(':
+                        i += 1
+                    break
+
+                i += 1
+
+            return obj
+
+        return parse(0)
+
+    def _parse_fields_dict(self, obj):
+        """Convert an object returned by _parse_fields_string (or a response object) 
+        into a valid 'fields' string."""
+        fields = ""
+        for key, value in obj.items():
+            fields += key
+            if isinstance(value, dict):
+                fields += '/' if len(value) == 1 else '('
+                fields += self._parse_fields_dict(value)
+                if len(value) > 1: fields += ')'
+            fields += ','
+        return fields.rstrip(',')
+
+    def _merge_fields(self, fields1, fields2):
+        """Merge valid 'fields' strings into a single valid 'fields' string."""
+        obj1 = self._parse_fields_string(fields1)
+        obj2 = self._parse_fields_string(fields2)
+
+        def merge_dicts(d1, d2):
+            for k2, v2 in d2.items():
+                v1 = d1.get(k2)
+                if v1 is None:
+                    d1[k2] = v2
+                else:
+                    # The key exists in both dicts.
+                    t1, t2 = type(v1), type(v2)
+                    if t1 is dict and t2 is dict:
+                        d1[k2] = merge_dicts(v1, v2)
+                    elif t1 is dict:
+                        d1[k2] = v1
+                    elif t2 is dict:
+                        d1[k2] = v2
+                    else:
+                        d1[k2] = v2
+            return d1
+        
+        obj = merge_dicts(obj1, obj2)
+        return self._parse_fields_dict(obj)
 
     def list_all(self, **kwargs):
         result = []
@@ -639,7 +718,7 @@ class PPGoogleDrive(GoogleDrive):
 
     def upload_file(self, file_path, folder_id='root', file_id=None, fields=None):
         # Override.
-        fields = self.add_to_fields(fields, "id,name,size")
+        fields = self._merge_fields(fields or '', "id,name,size")
         resp = super().upload_file(file_path, folder_id=folder_id, file_id=file_id, fields=fields)
 
         operation = "UPDATE" if file_id else "NEW"

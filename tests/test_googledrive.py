@@ -11,14 +11,6 @@ from backuper import googledrive
 
 g = googledrive.GoogleDrive()
 
-def test_progress_bar():
-    n = 100
-    t0 = time.time()
-    with printer.block() as b:
-        for i in range(n):
-            g.print_progress_bar(b, i / n, t0, desc="Test:")
-            time.sleep(0.1)
-        g.print_progress_bar(b, 1, t0, desc="Test:")
 
 def test_changes():
     import pprint
@@ -32,7 +24,7 @@ def test_changes():
     g.delete(folder_id)
 
     changes = g.get_changes(start_page_token=token,
-        fields="changes(file(id, name, mimeType, md5Checksum, modifiedTime, trashed), fileId, removed)",
+        fields="changes(file(id, name, mimeType, md5Checksum, modifiedTime, trashed, parents), fileId, removed)",
         include_removed=True)
 
     for change in changes:
@@ -68,6 +60,7 @@ def test_file_upload(pretty=False):
     g.delete(r['id'])
 
     if pretty: print(PRETTY_FPATH)
+    g.exit()
 
 def test_list():
     for r in g.get_files_in_folder('root'):
@@ -128,6 +121,27 @@ def test_pretty_full():
     print("Remote path cache: hits: {}, misses: {}".format(pp.remote_cache.hits, pp.remote_cache.misses))
     print(LOG_PATH)
 
+def test_fields():
+    fields = ["", " a , b, c", "q, w, a/b/c, e, x/y/z", "a1(b1,b2/c),a2", 
+        "a/*/b(c1,c2,c3/d,c4(e1,e2))"]
+    for field in fields:
+        print(field)
+        obj = g._parse_fields_string(field)
+        pprint.pprint(obj)
+        print(g._parse_fields_dict(obj))
+    
+    print(g._parse_fields_dict(
+        {
+        "kind": "drive#file",
+        "id": "qwer",
+        "name": "My Drive",
+        "mimeType": "application/vnd.google-apps.folder",
+        "files": { 'a': 'qwer', 'b': 'asdf' }
+        }
+    ))
+
+    print(g._merge_fields("m, a/b/c", "n, a(b(c, d), e)"))  # m, n, a(b(c, d), e)
+
 if __name__ == "__main__":
     # test_progress_bar()
 
@@ -135,10 +149,13 @@ if __name__ == "__main__":
     # g.download_file('1mLmwd_FuxmyKMRLcGWVF8xGumbCSPvu4', "tests/")
     # g.download_folder('0B94xod46LwqkZlVnN2I1VVNCemc', "tests/")
 
-    # test_changes()
-    # test_file_upload()
-    test_list()
+    test_changes()
+    # test_file_upload(True)
+    # test_list()
     # test_walk_folder("0B94xod46LwqkSVIyTktCMVV1QWM")
     # test_pretty_print()
     # test_file_upload(True)
     # test_pretty_full()
+    # test_fields()
+
+    g.exit()
