@@ -2,6 +2,8 @@ import os
 import configparser
 import datetime
 import logging
+import re
+import fnmatch
 
 from . import googledrive
 from . import database as db
@@ -27,16 +29,16 @@ class BaseFile(configparser.ConfigParser):
         return val
 
     def get_values(self, section, option, sep=";"):
-        return self.get(section, option).strip(sep).split(sep)
+        return [val for val in [val.strip() for val in self.get(section, option).strip(sep).split(sep) if val] if val]
 
     def get_unified_paths(self, section, option, sep=";"):
         # Paths are stripped to allow multiline values.
-        return { db.unify_path(path.strip()) 
-            for path in self.get_values(section, option, sep=sep) if path }
+        return { db.unify_path(path) 
+            for path in self.get_values(section, option, sep=sep) }
 
     def get_unified_values(self, section, option, sep=";"):
-        return { db.unify_str(val.strip()) 
-            for val in self.get_values(section, option, sep=sep) if val }
+        return { db.unify_str(val) 
+            for val in self.get_values(section, option, sep=sep) }
 
     def write_to_file(self):
         with open(self.file_path, 'w', encoding=ENCODING) as f:
@@ -72,22 +74,20 @@ class UserSettingsFile(BaseFile):
         
         # These paths (files or directories) won't get synced.
         blacklisted_paths = 
-        
-        # Files/directories with these extensions won't get synced.
-        blacklisted_extensions = 
-            .ipch;
-            .pdb;
-            .ilk;
-            .tlog;
-            .vc.db;
-            .pyc;
-            .lnk;
-        
-        # Files/directories with these names won't get synced.
-        blacklisted_names = 
+
+        # Files/directories matching these Unix shell-style wildcards (fnmatch) rules won't get synced.
+        blacklisted_rules = 
+            *.ipch;
+            *.pdb;
+            *.ilk;
+            *.tlog;
+            *.vc.db;
+            *.pyc;
+            *.lnk;
             Thumbs.db;
-            .vs;
+            *.vs;
             __pycache__;
+            ~$*;
 
         # Generate a tree log of the given directories, including files.
         tree_with_files = 
@@ -117,6 +117,17 @@ class UserSettingsFile(BaseFile):
     
     def get_bool(self, option):
         return self.getboolean("Settings", option)
+
+    def get_regex_rules(self, option):
+        # fnmatch -> regex patterns -> single compiled regex
+        patterns = []
+        for rule in self.get_values("Settings", option):
+            # On windows case in-sensitive, on unix case sensitive!
+            rule = db.unify_str(rule)
+            patterns.append(fnmatch.translate(rule))
+        pattern = '|'.join(("({})".format(pat) for pat in patterns))
+        return re.compile(pattern)
+
 
 class DataFile(BaseFile):
     """Stores application specific information."""
@@ -209,10 +220,9 @@ class Settings:
         # the children of those paths/folders
         # blacklisted_extensions work for both folders and files
         self.blacklisted_paths = self.data_file.get_unified_paths("Backuper", "blacklisted_paths")
-        self.blacklisted_extensions = self.user_settings_file.get_unified_values('Settings', 'blacklisted_extensions')
-        self.blacklisted_names = self.user_settings_file.get_unified_values('Settings', 'blacklisted_names')
         user_blacklist = self.user_settings_file.get_paths_in_option("blacklisted_paths")
         self.blacklisted_paths.update(user_blacklist)
+        self.blacklisted_rules = [self.user_settings_file.get_regex_rules("blacklisted_rules")]
 
         self.sync_dirs = self.user_settings_file.get_paths_in_option("sync_dirs")
 
@@ -238,16 +248,12 @@ class Settings:
             self.data_file.set_root_folder_id(folder_id)
         return folder_id
 
-    def contains_blacklisted_ext(self, basename):
-        for ext in self.blacklisted_extensions:
-            if basename.endswith(ext):
+    def contains_blacklisted_rules(self, path):
+        name = os.path.basename(path)
+        for rule in self.blacklisted_rules:
+            if rule.fullmatch(name):
                 return True
         return False
-
-    def contains_blacklisted_rules(self, path):
-        entry = db.unify_path(path)
-        basename = os.path.basename(entry)
-        return (basename in self.blacklisted_names) or (self.contains_blacklisted_ext(entry))
 
     def contains_blacklisted_rules_parent(self, path, stop):
         if path in stop:
