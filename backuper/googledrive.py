@@ -205,10 +205,20 @@ class GoogleDrive:
             downloader = MediaIoBaseDownload(f, request, chunksize=self.DOWNLOAD_CHUNK_SIZE)
 
             pbar = progressbar.blockbar(desc="DL " + filename, bar_width=12)
-            time_started = time.time()
             done = False
             while not done:
-                status, done = downloader.next_chunk(num_retries=NUM_RETRIES)
+                try:
+                    status, done = downloader.next_chunk(num_retries=NUM_RETRIES)
+                except HttpError as e:
+                    # "Request range not satisfiable" error
+                    # This is a bug in MediaIoBaseDownload. It happens when
+                    # trying to download a file with size 0 bytes. The error
+                    # is safe to ignore.
+                    if e.resp.status == 416:
+                        logging.warning(e)
+                        break
+                    raise e
+
                 pbar.set_progress(status.progress() if status else 1)
             pbar.close()
 
@@ -239,7 +249,6 @@ class GoogleDrive:
         request = self._determine_update_or_insert(body, media_body=media_body, file_id=file_id, fields=fields)
         
         pbar = progressbar.blockbar(desc="UL " + body["name"], bar_width=12)
-        time_started = time.time()
         response = None if resumable else request.execute()  # Empty files are not chunked.
         while response is None:
             status, response = request.next_chunk(num_retries=5)
