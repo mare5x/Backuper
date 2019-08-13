@@ -97,8 +97,9 @@ class Backuper:
         rejected = []
         for obj, path in conflicts:
             while True:
+                remote_path = self.google.get_remote_path(obj.resp["id"])
                 q = input("CONFLICT: {remote_path} ({file_id}) => {path} (y/n/o/?): ".format(
-                        remote_path=obj.remote_path, file_id=obj.file_id, path=path))
+                        remote_path=remote_path, file_id=obj.resp["id"], path=path))
                 if q == 'y':
                     resolved.append((obj, path))
                     break
@@ -124,37 +125,41 @@ class Backuper:
 
         root_dl_path = self.conf.user_settings_file.get_path_in_option("default_download_path")
         root_folder_id = self.conf.get_root_folder_id(self.google)
-        root_path = self.google.get_remote_path(root_folder_id)
         
-        # Map tracked remote paths to local paths.
+        # Map tracked ids to local paths.
         tracked_map = dict()
         for path in self.conf.sync_dirs:
             archive = db.get("path", path)
             if archive is None: continue
-            remote_path = self.google.get_remote_path(archive.drive_id)
-            tracked_map[remote_path] = archive.path
-        tracked_map[root_path] = root_dl_path
+            tracked_map[archive.drive_id] = archive.path
+        tracked_map[root_folder_id] = root_dl_path
 
-        def get_dl_path(remote_path):
-            head, tail = os.path.split(remote_path)
-            while head != root_path:
-                if head in tracked_map: break
-                head, tmp = os.path.split(head)
-                tail = os.path.join(tmp, tail)
-            return os.path.join(tracked_map[head], tail)
+        def get_dl_path(obj):
+            # We can save one API call by using the change response ...
+            file_id, parent_id, name = obj.resp["id"], obj.resp["parents"][0], obj.resp["name"]
+            root_parent_id = obj.root_parent_id
+
+            mid_path = self.google.get_remote_path(parent_id, root_parent_id).strip(os.path.sep)
+            archive = db.get("drive_id", root_parent_id)
+            pre_path = archive.path if archive else tracked_map[root_parent_id]
+            return os.path.join(pre_path, mid_path, name)
 
         def enqueue(q, obj, path):
-            args = { "type": obj.type, "file_id": obj.file_id, "path": path }
+            args = { "type": obj.type, "file_id": obj.resp["id"], "path": path }
             if obj.type == "#file":
                 path, filename = os.path.split(path)
-                args.update( {'path': path, 'filename': filename, 'md5sum': obj.md5checksum} )
+                args.update( {'path': path, 'filename': filename, 'md5sum': obj.resp["md5Checksum"]} )
             if dry_run: pprint.pprint(args)
             else: q.put(Entry(**args))
 
         q = gd_downloader.start_download_queue(n_threads=THREADS)
         conflicts = []
-        for obj in crawler.get_changes_to_download(root_path, update_token=(not dry_run)):
-            path = get_dl_path(obj.remote_path)
+        for obj in crawler.get_changes_to_download(root_folder_id, update_token=(not dry_run)):
+            path = get_dl_path(obj)
+            # Different remote folders with the same name can co-exist remotely. However, locally
+            # they cannot (on Windows). As such, the contents of those folders will be dumped
+            # into the same folder locally. The best way to handle this conflict is by preventing
+            # it from happening ... TODO
             if obj.sync_decision == crawler.CONFLICT_FLAG or os.path.exists(path):
                 conflicts.append((obj, path))
                 continue
@@ -168,6 +173,7 @@ class Backuper:
                 enqueue(q, obj, path)
             gd_downloader.wait_for_queue(q)
 
+        # TODO: even if wait_for_queue raised an exception this code is run?!?!?
         if not dry_run:
             self.conf.data_file.set_last_download_sync_time()
 

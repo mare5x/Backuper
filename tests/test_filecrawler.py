@@ -41,7 +41,8 @@ def test_drivecrawler_folder(folder_id):
 def test_drivecrawler_changes():
     db = database.GoogleDriveDB()
     conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
-    crawler = filecrawler.DriveFileCrawler(conf, googledrive.GoogleDrive())
+    g = googledrive.GoogleDrive()
+    crawler = filecrawler.DriveFileCrawler(conf, g)
     
     change_date = datetime.datetime(2019, 5, 20)
     change_date = googledrive.convert_datetime_to_google_time(change_date)
@@ -51,6 +52,7 @@ def test_drivecrawler_changes():
     for obj in crawler.get_changes_to_download():
         print(obj)
 
+    g.exit()
     conf.exit()
     db.close()
 

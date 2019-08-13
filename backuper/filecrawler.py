@@ -137,42 +137,45 @@ class DriveFileCrawler:
         return parent_archive
 
     _get_changes_to_download_obj = namedtuple("get_changes_to_download_obj", 
-        ["sync_decision", "type", "file_id", "remote_path", "md5checksum"])
-    def get_changes_to_download(self, root_path=None, update_token=False):
-        """Yields changed files/folders descended from the given root path.
-        root_path should be a valid remote path.
-        Yields: an object with the following fields: "sync_decision", "type", "file_id", "remote_path", "md5checksum"
+        ["sync_decision", "type", "resp", "root_parent_id"])
+    def get_changes_to_download(self, root_id=None, update_token=False):
+        """Yields changed files/folders descended from the given root file id.
+        Yields: an object with the following fields: "sync_decision", "type", "resp", "root_parent_id"
         sync_decision: SAFE_FLAG: int, safe sync
-                       CONFLICT_FLAG: int, conflict.
+                       CONFLICT_FLAG: int, conflict
         type: #folder or #file
-        remote path string: e.g. "Backuper\\Folder\\file.py"
+        resp: response dict with the following keys: 'id', 'name', 'md5Checksum', 'parents'
+        root_parent_id: either the root_id or a known archived file id.
         """
         ret_type = self._get_changes_to_download_obj
 
-        if root_path is None:
-            root_folder_id = self.conf.get_root_folder_id(self.google)
-            root_path = self.google.get_remote_path(root_folder_id)
+        if root_id is None:
+            root_id = self.conf.get_root_folder_id(self.google)
 
         last_download_change_token = self.conf.data_file.get_last_download_change_token()
         if last_download_change_token == -1:
             last_download_change_token = self.google.get_start_page_token()
 
         # Ignore the trees folder ...
-        blacklisted_remote_paths = set()
-        tmp = self.conf.data_file.get_trees_folder_id()
-        if tmp: blacklisted_remote_paths.add(self.google.get_remote_path(tmp))
+        blacklisted_ids = set()
+        trees_id = self.conf.data_file.get_trees_folder_id()
+        if trees_id: blacklisted_ids.add(trees_id)
         
-        def is_valid_path(remote_path):
-            if remote_path == root_path: return False  # Edge case. Yield only descendants from root_path.
-            if not remote_path.startswith(root_path): return False
-            for path in blacklisted_remote_paths:
-                if remote_path.startswith(path): return False
-            return True
-
         # Note: it is important to check the parent of each changed file because the listed
-        # changes are global (from any folder in My Drive). Remote paths are used because
-        # they are "fast" and work for un-archived folders. However, multiple folders 
-        # can share the same remote path (bad).
+        # changes are global (from any folder in My Drive). 
+        def get_parent(file_id, parent_id):
+            # Checking the database can save us a few API calls. Also, metadata is cached
+            # so getting parents shouldn't be that slow.
+            # One parent call is saved by passing the parent_id in from the changes response.
+
+            # Edge case. Yield only descendants from root_id.
+            if file_id == root_id or file_id in blacklisted_ids: return None 
+
+            for parent_id in self.google.get_parents(parent_id):  # first, parent_id is yielded
+                if parent_id in blacklisted_ids: return None
+                if parent_id == root_id or db.GoogleDriveDB.get("drive_id", parent_id):
+                    return parent_id
+            return None
 
         changes = self.google.get_changes(start_page_token=last_download_change_token,
             fields="changes(file(id, name, md5Checksum, modifiedTime, parents, trashed, mimeType))",
@@ -187,14 +190,15 @@ class DriveFileCrawler:
             if change_datetime < last_download_sync_datetime:
                 continue
             file_id = file_change["id"]
-            remote_path = self.google.get_remote_path(file_id)
-            if not is_valid_path(remote_path): 
+            parent_id = file_change["parents"][0] if "parents" in file_change else None
+            root_parent_id = get_parent(file_id, parent_id)
+            if root_parent_id is None: 
                 continue
             md5sum = file_change.get("md5Checksum", "")
             decision = self.is_for_download(file_id, md5sum, change_datetime)
             if decision != self.NEUTRAL_FLAG:
                 _type = "#folder" if (file_change["mimeType"] == self.google.FOLDER_MIMETYPE) else "#file"
-                yield ret_type(decision, _type, file_id, remote_path, md5sum)
+                yield ret_type(decision, _type, file_change, root_parent_id)
 
         if update_token:
             self.conf.data_file.set_last_download_change_token(self.google.get_start_page_token())
@@ -207,7 +211,7 @@ class DriveFileCrawler:
         sync_decision: SAFE_FLAG: int, safe sync
                        CONFLICT_FLAG: int, conflict.
         type: #folder or #file
-        remote path string: e.g. "Backuper\\Folder\\file.py"
+        remote path string: e.g. "\\My Drive\\Backuper\\file.py"
         """
         ret_type = DriveFileCrawler._ids_to_download_in_folder_obj
         for dirpath, dirnames, filenames in self.google.walk_folder(folder_id, fields="files(id, md5Checksum, name, modifiedTime)"):
