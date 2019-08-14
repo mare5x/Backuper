@@ -86,21 +86,39 @@ class Backuper:
 
     def handle_download_conflicts(self, conflicts, dry_run=False):
         print("Handling download conflicts ..." + (" (dry)" if dry_run else ""))
-        
-        help_str = "Enter 'y' to accept the resolution, 'n' to reject it" \
-                   " and 'o' to accept the resolution but create a non-conflicting filename." \
-                   " Enter '?' for help."
+        import textwrap
+        help_str = textwrap.dedent("""
+        Enter:
+        'y' to accept the resolution, 
+        'n' to reject it,
+        'o' to accept the resolution but create a non-conflicting filename,
+        'a' to accept all remaining as 'y',
+        'r' to reject all remaining as 'n',
+        'c' to accept all remaining as 'o', and
+        '?' for help.
+        """)
         
         print("There are {} download conflicts.".format(len(conflicts)))
-        print(help_str)
 
         resolved = []
         rejected = []
+        accept_all = False
+        reject_all = False
+        accept_all_nonconflict = False
         for obj, path in conflicts:
             while True:
-                remote_path = self.google.get_remote_path(obj.resp["id"])
-                q = input("CONFLICT: {remote_path} ({file_id}) => {path} (y/n/o/?): ".format(
-                        remote_path=remote_path, file_id=obj.resp["id"], path=path))
+                q = '?'
+                if accept_all:
+                    q = 'y'
+                elif reject_all:
+                    q = 'n'
+                elif accept_all_nonconflict:
+                    q = 'o'
+                else:
+                    remote_path = self.google.get_remote_path(obj.resp["id"])
+                    q = input("CONFLICT: {remote_path} ({file_id}) => {path} [y/n/o/a/r/c/?]: ".format(
+                            remote_path=remote_path, file_id=obj.resp["id"], path=path))
+                
                 if q == 'y':
                     resolved.append((obj, path))
                     break
@@ -110,6 +128,12 @@ class Backuper:
                 elif q == 'o':
                     resolved.append((obj, ft.create_filename(path)))
                     break
+                elif q == 'a':
+                    accept_all = True
+                elif q == 'r':
+                    reject_all = True
+                elif q == 'c':
+                    accept_all_nonconflict = True
                 elif q == '?':
                     print(help_str)
                 else:
