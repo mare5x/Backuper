@@ -138,19 +138,19 @@ class DriveFileCrawler:
 
     _get_changes_to_download_obj = namedtuple("get_changes_to_download_obj", 
         ["sync_decision", "type", "resp", "root_parent_id"])
-    def get_changes_to_download(self, root_id=None, update_token=False):
-        """Yields changed files/folders descended from the given root file id.
+    def get_changes_to_download(self, root_ids=None, update_token=False):
+        """Yields changed files/folders descended from the given root file ids.
         Yields: an object with the following fields: "sync_decision", "type", "resp", "root_parent_id"
-        sync_decision: SAFE_FLAG: int, safe sync
-                       CONFLICT_FLAG: int, conflict
-        type: #folder or #file
-        resp: response dict with the following keys: 'id', 'name', 'md5Checksum', 'parents'
-        root_parent_id: either the root_id or a known archived file id.
+            sync_decision: SAFE_FLAG: int, safe sync
+                           CONFLICT_FLAG: int, conflict
+            type: #folder or #file
+            resp: response dict with the following keys: 'id', 'name', 'md5Checksum', 'parents'
+            root_parent_id: either an id in root_ids or a known archived file id.
         """
         ret_type = self._get_changes_to_download_obj
 
-        if root_id is None:
-            root_id = self.conf.get_root_folder_id(self.google)
+        if root_ids is None:
+            root_ids = [self.conf.get_root_folder_id(self.google)]
 
         last_download_change_token = self.conf.data_file.get_last_download_change_token()
         if last_download_change_token == -1:
@@ -169,11 +169,11 @@ class DriveFileCrawler:
             # One parent call is saved by passing the parent_id in from the changes response.
 
             # Edge case. Yield only descendants from root_id.
-            if file_id == root_id or file_id in blacklisted_ids: return None 
+            if file_id in root_ids or file_id in blacklisted_ids: return None 
 
             for parent_id in self.google.get_parents(parent_id):  # first, parent_id is yielded
                 if parent_id in blacklisted_ids: return None
-                if parent_id == root_id or db.GoogleDriveDB.get("drive_id", parent_id):
+                if parent_id in root_ids or db.GoogleDriveDB.get("drive_id", parent_id):
                     return parent_id
             return None
 

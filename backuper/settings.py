@@ -68,8 +68,10 @@ class UserSettingsFile(BaseFile):
         # These local directory paths will be synced with /My Drive/Backuper/[...].
         sync_dirs = 
         
-        # Where to download new/changed files (those not a part of 
-        # a synced directory).
+        # Download changed untracked files (those not part of a synced directory) (true) or not (false)?
+        download_untracked_changes = true
+
+        # Where to download untracked files if 'download_untracked' is true.
         default_download_path = ./downloads/
         
         # These paths (files or directories) won't get synced.

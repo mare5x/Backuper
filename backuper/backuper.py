@@ -123,16 +123,17 @@ class Backuper:
         gd_downloader = downloader.DriveDownloader(self.google)
         Entry = gd_downloader.DLQEntry
 
-        root_dl_path = self.conf.user_settings_file.get_path_in_option("default_download_path")
-        root_folder_id = self.conf.get_root_folder_id(self.google)
-        
         # Map tracked ids to local paths.
         tracked_map = dict()
         for path in self.conf.sync_dirs:
             archive = db.get("path", path)
             if archive is None: continue
             tracked_map[archive.drive_id] = archive.path
-        tracked_map[root_folder_id] = root_dl_path
+
+        if self.conf.user_settings_file.get_bool("download_untracked_changes"):
+            root_dl_path = self.conf.user_settings_file.get_path_in_option("default_download_path")
+            root_folder_id = self.conf.get_root_folder_id(self.google)
+            tracked_map[root_folder_id] = root_dl_path
 
         def get_dl_path(obj):
             # We can save one API call by using the change response ...
@@ -154,7 +155,7 @@ class Backuper:
 
         q = gd_downloader.start_download_queue(n_threads=THREADS)
         conflicts = []
-        for obj in crawler.get_changes_to_download(root_folder_id, update_token=(not dry_run)):
+        for obj in crawler.get_changes_to_download(set(tracked_map.keys()), update_token=(not dry_run)):
             path = get_dl_path(obj)
             # Different remote folders with the same name can co-exist remotely. However, locally
             # they cannot (on Windows). As such, the contents of those folders will be dumped
