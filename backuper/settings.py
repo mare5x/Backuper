@@ -102,6 +102,10 @@ class UserSettingsFile(BaseFile):
         
         # Where to keep the tree zip if 'tree_keep_local' is true.
         tree_keep_path = ./trees/
+
+        # The number of threads to use when downloading/uploading.
+        download_threads = 5
+        upload_threads = 5
         """
         s = textwrap.dedent(s)
         # Write a pretty representation to file, because
@@ -119,6 +123,9 @@ class UserSettingsFile(BaseFile):
     
     def get_bool(self, option):
         return self.getboolean("Settings", option)
+
+    def get_int(self, option):
+        return self.getint("Settings", option)
 
     def get_regex_rules(self, option):
         # fnmatch -> regex patterns -> single compiled regex

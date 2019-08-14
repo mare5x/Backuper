@@ -18,6 +18,8 @@ class Backuper:
     def __init__(self, pretty_log=False):
         database.GoogleDriveDB.init()
         self.conf = settings.Settings(SETTINGS_FILE, DATA_FILE)
+        self.upload_threads = self.conf.user_settings_file.get_int("upload_threads")
+        self.download_threads = self.conf.user_settings_file.get_int("download_threads")
         
         if pretty_log:
             dirpath = ft.create_dir("logs")
@@ -53,12 +55,11 @@ class Backuper:
 
     def upload_changes(self):
         print("Uploading changes ...")
-        THREADS = 5
         gd_uploader = uploader.DBDriveUploader(self.google, self.conf.get_root_folder_id(self.google))
         # First, the folder structure must be made so that files can be placed
         # in the correct directories. This can't be queued because the order is 
         # important.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=THREADS, thread_name_prefix="Backuper") as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.upload_threads, thread_name_prefix="Backuper") as ex:
             futures = []
             for dirpath in self.conf.sync_dirs:
                 futures.append(ex.submit(self._upload_folder_structure, dirpath, gd_uploader))
@@ -66,7 +67,7 @@ class Backuper:
                 fut.result()  # Re-raise the exception, if it occurred once all threads are done.
 
         # Now, we can upload the files.
-        q = gd_uploader.start_upload_queue(n_threads=THREADS)
+        q = gd_uploader.start_upload_queue(n_threads=self.upload_threads)
         for dirpath in self.conf.sync_dirs:
             self._enqueue_path_changes(dirpath, q)
         gd_uploader.wait_for_queue(q)
@@ -117,7 +118,6 @@ class Backuper:
 
     def download_changes(self, dry_run=False):
         print("Downloading changes ..." + (" (dry)" if dry_run else ""))
-        THREADS = 5
         db = database.GoogleDriveDB()
         crawler = filecrawler.DriveFileCrawler(self.conf, self.google)
         gd_downloader = downloader.DriveDownloader(self.google)
@@ -153,7 +153,7 @@ class Backuper:
             if dry_run: pprint.pprint(args)
             else: q.put(Entry(**args))
 
-        q = gd_downloader.start_download_queue(n_threads=THREADS)
+        q = gd_downloader.start_download_queue(n_threads=self.download_threads)
         conflicts = []
         for obj in crawler.get_changes_to_download(set(tracked_map.keys()), update_token=(not dry_run)):
             path = get_dl_path(obj)
@@ -242,7 +242,7 @@ class Backuper:
             if dry_run: print(folder)
             else: gd_uploader.create_dir(folder)
 
-        q = gd_uploader.start_upload_queue()
+        q = gd_uploader.start_upload_queue(n_threads=self.upload_threads)
         for fpath in file_crawler.get_files_to_sync(local_path):
             if dry_run: print(fpath)
             else: q.put(fpath)
@@ -263,7 +263,7 @@ class Backuper:
             if dry_run: pprint.pprint(args)
             else: q.put(Entry(**args))
 
-        q = gd_downloader.start_download_queue()
+        q = gd_downloader.start_download_queue(n_threads=self.download_threads)
         conflicts = []
         for obj in crawler.get_ids_to_download_in_folder(folder_id):
             # Get rid of the folder name prefix, so that local_path is the 
